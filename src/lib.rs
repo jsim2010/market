@@ -1,33 +1,49 @@
-//! Implements traits for sending and receiving messages.
+//! A library to simplify development with producers and consumers.
+//!
+//! The core purpose of this library is to define the traits [`Consumer`] and [`Producer`]. These traits provide the functionality to send and receive items known as **goods**. The most basic implementations of these traits are the [`mpsc::Receiver`] and [`mpsc::Sender`] structs.
+//!
+//! [`Consumer`]: trait.Consumer.html
+//! [`Producer`]: trait.Producer.html
 use {
-    core::fmt::Debug,
-    crossbeam_channel::{Receiver, RecvError, SendError, Sender},
-    std::sync::mpsc::{Receiver as StdReceiver, RecvError as StdRecvError, TryRecvError},
+    core::fmt::{self, Debug, Display},
+    crossbeam_channel::SendError,
+    crossbeam_queue::{PopError, SegQueue},
+    std::{error::Error, sync::{Mutex, mpsc::{self, TryRecvError}}},
 };
 
-///  Retrieves records that have been produced by a [`Producer`].
+/// Retrieves goods that have been produced.
+///
+/// Because retrieving a good is failable, a [`Consumer`] actually retrieves a `Result<Self::Good, Self::Error>`.
 pub trait Consumer: Debug {
-    /// The type that is being consumed.
-    type Good;
-    /// The possible error type.
-    type Error;
+    /// The type of the item returned by a successful consumption.
+    type Good: Debug;
+    /// The type of an error during consumption.
+    type Error: Error;
 
-    /// Returns if a record is available.
+    /// Returns if [`consume`] will return immediately.
+    ///
+    /// Note that returning true does not indicate that the returned value of [`consume`] will be [`Ok`].
     fn can_consume(&self) -> bool;
-    /// Blocks the current thread until a record is available.
+    /// Returns the next consumable, blocking the current thread if needed.
+    ///
+    /// The definition of **next** shall be defined by the implementing item.
     fn consume(&self) -> Result<Self::Good, Self::Error>;
 
-    /// Consumes a record if one is available.
-    fn optional_consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    /// Attempts to consume a good without blocking the current thread.
+    ///
+    /// Returning [`None`] indicates that no consumable was found.
+    fn optional_consume(&self) -> Option<Result<Self::Good, Self::Error>> {
         if self.can_consume() {
-            self.consume().map(Some)
+            Some(self.consume())
         } else {
-            Ok(None)
+            None
         }
     }
 
-    /// Returns an [`Iterator`] that blocks the current thread until `self` can consume a record.
-    fn records(&self) -> GoodsIter<'_, Self::Good, Self::Error>
+    /// Returns an [`Iterator`] that yields goods, blocking the current thread if needed.
+    ///
+    /// The returned [`Iterator`] shall yield [`None`] if and only if an error occurs during consumption.
+    fn goods(&self) -> GoodsIter<'_, Self::Good, Self::Error>
     where
         Self: Sized,
     {
@@ -35,27 +51,70 @@ pub trait Consumer: Debug {
     }
 }
 
-/// Adds records that can be consumed by a [`Consumer`].
+/// Generates goods to be consumed.
 pub trait Producer<'a> {
-    /// The type that is being produced.
+    /// The type of the item being produced.
     type Good;
-    /// The possible error type.
+    /// The type of an error during production.
     type Error;
 
-    /// Produces `good` on the respective queue.
+    /// Transfers `good` to be consumed, blocking the current thread if needed.
     fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error>;
 }
 
-/// Maps a [`crossbeam_channel::Sender`] to a [`Consumer`].
+/// Defines a [`mpsc::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
-pub struct CrossbeamConsumer<T> {
-    /// The consumer.
-    rx: Receiver<T>,
+pub struct MpscConsumer<G: Debug> {
+    /// The receiver.
+    rx: mpsc::Receiver<G>,
+    /// The next good to be consumed.
+    ///
+    /// Used for implementing [`can_consume`] as [`mpsc::Receiver`] does not provide the functionality of checking if an item can be received without actually receiving the item.
+    next_good: Mutex<Option<G>>,
 }
 
-impl<T: Debug> Consumer for CrossbeamConsumer<T> {
-    type Good = T;
-    type Error = RecvError;
+impl<G: Debug> Consumer for MpscConsumer<G> {
+    type Good = G;
+    type Error = mpsc::RecvError;
+
+    fn can_consume(&self) -> bool {
+        let mut next_good = self.next_good.lock().unwrap();
+
+        next_good.is_some()
+            || match self.rx.try_recv() {
+                Err(TryRecvError::Disconnected) => true,
+                Err(TryRecvError::Empty) => false,
+                Ok(good) => {
+                    let _ = next_good.replace(good);
+                    true
+                }
+            }
+    }
+
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
+        self.next_good.lock().unwrap().take().map(Ok).unwrap_or_else(|| self.rx.recv())
+    }
+}
+
+impl<G: Debug> From<mpsc::Receiver<G>> for MpscConsumer<G> {
+    fn from(value: mpsc::Receiver<G>) -> Self {
+        Self {
+            rx: value,
+            next_good: Mutex::new(None),
+        }
+    }
+}
+
+/// Defines a [`crossbeam_channel::Receiver`] that implements [`Consumer`].
+#[derive(Debug)]
+pub struct CrossbeamConsumer<G> {
+    /// The [`crossbeam_channel::Recevier`].
+    rx: crossbeam_channel::Receiver<G>,
+}
+
+impl<G: Debug> Consumer for CrossbeamConsumer<G> {
+    type Good = G;
+    type Error = crossbeam_channel::RecvError;
 
     fn can_consume(&self) -> bool {
         !self.rx.is_empty()
@@ -66,134 +125,101 @@ impl<T: Debug> Consumer for CrossbeamConsumer<T> {
     }
 }
 
-impl<T> From<Receiver<T>> for CrossbeamConsumer<T> {
-    fn from(value: Receiver<T>) -> Self {
+impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G> {
+    fn from(value: crossbeam_channel::Receiver<G>) -> Self {
         Self { rx: value }
     }
 }
 
-/// Maps a [`crossbeam_channel::Receiver`] to a [`Producer<`].
+/// Defines a [`crossbeam_channel::Sender`] that implements [`Producer`].
 #[derive(Debug)]
-pub struct CrossbeamProducer<T> {
-    /// The producer.
-    tx: Sender<T>,
+pub struct CrossbeamProducer<G> {
+    /// The sender.
+    tx: crossbeam_channel::Sender<G>,
 }
 
-impl<'a, T> Producer<'a> for CrossbeamProducer<T> {
-    type Good = T;
-    type Error = SendError<T>;
+impl<'a, G> Producer<'a> for CrossbeamProducer<G> {
+    type Good = G;
+    type Error = SendError<G>;
 
     fn produce(&self, record: Self::Good) -> Result<(), Self::Error> {
         self.tx.send(record)
     }
 }
 
-impl<T> From<Sender<T>> for CrossbeamProducer<T> {
-    fn from(value: Sender<T>) -> Self {
+impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
+    fn from(value: crossbeam_channel::Sender<G>) -> Self {
         Self { tx: value }
     }
 }
 
-/// A queue where a consumer yields records in the order a producer produces them.
 #[derive(Debug)]
-pub struct Queue<T> {
-    /// The producer.
-    producer: CrossbeamProducer<T>,
-    /// The consumer.
-    consumer: CrossbeamConsumer<T>,
+pub enum NoneError {
 }
 
-impl<T> Queue<T> {
-    /// Creates a new [`Queue`].
+impl Display for NoneError {
+    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Ok(())
+    }
+}
+
+impl Error for NoneError {
+}
+
+/// Defines a [`crossbeam_queue::SegQueue`] that implements [`Consumer`] and [`Producer`].
+#[derive(Debug)]
+pub struct UnlimitedQueue<G> {
+    /// The queue.
+    queue: SegQueue<G>,
+}
+
+impl<G> UnlimitedQueue<G> {
+    /// Creates a new empty [`UnlimitedQueue`].
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl<T: Debug> Consumer for Queue<T> {
-    type Good = T;
-    type Error = <CrossbeamConsumer<T> as Consumer>::Error;
+impl<G: Debug> Consumer for UnlimitedQueue<G> {
+    type Good = G;
+    type Error = PopError;
 
     fn can_consume(&self) -> bool {
-        self.consumer.can_consume()
+        !self.queue.is_empty()
     }
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
-        self.consumer.consume()
+        self.queue.pop()
     }
 }
 
-impl<T> Default for Queue<T> {
+impl<G> Default for UnlimitedQueue<G> {
     fn default() -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded();
-
         Self {
-            producer: tx.into(),
-            consumer: rx.into(),
+            queue: SegQueue::new(),
         }
     }
 }
 
-impl<'a, T> Producer<'a> for Queue<T> {
-    type Good = T;
-    type Error = <CrossbeamProducer<T> as Producer<'a>>::Error;
+impl<'a, G> Producer<'a> for UnlimitedQueue<G> {
+    type Good = G;
+    type Error = NoneError;
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
-        self.producer.produce(good)
+        Ok(self.queue.push(good))
     }
 }
 
-/// Maps a [`Receiver`] to a [`Consumer`].
-#[derive(Debug)]
-pub struct StdConsumer<T> {
-    /// The [`Receiver`].
-    std_rx: StdReceiver<T>,
-    /// The queue to hold records from `std_rx`.
-    queue: Queue<T>,
-}
-
-impl<T> From<StdReceiver<T>> for StdConsumer<T> {
-    fn from(value: StdReceiver<T>) -> Self {
-        Self {
-            std_rx: value,
-            queue: Queue::new(),
-        }
-    }
-}
-
-impl<T: Debug> Consumer for StdConsumer<T> {
-    type Good = T;
-    type Error = StdRecvError;
-
-    fn can_consume(&self) -> bool {
-        self.queue.can_consume()
-            || match self.std_rx.try_recv() {
-                Err(TryRecvError::Disconnected) => true,
-                Err(TryRecvError::Empty) => false,
-                Ok(good) => {
-                    let _ = self.queue.produce(good);
-                    true
-                }
-            }
-    }
-
-    fn consume(&self) -> Result<Self::Good, Self::Error> {
-        if self.queue.can_consume() {
-            self.queue.consume().map_err(|_| StdRecvError)
-        } else {
-            self.std_rx.recv()
-        }
-    }
-}
-
-/// An [`Iterator`] that yields the next consumed good.
+/// An [`Iterator`] that yields consumed goods, blocking the current thread if needed.
+///
+/// Shall yield [`None`] if and only if an error occurs during consumption.
 #[derive(Debug)]
 pub struct GoodsIter<'a, G, E> {
-    /// The [`Consumer`] that yields goods.
+    /// The consumer.
     consumer: &'a dyn Consumer<Good = G, Error = E>,
 }
 
-impl<G, E> Iterator for GoodsIter<'_, G, E> {
+impl<G: Debug, E: Error> Iterator for GoodsIter<'_, G, E> {
     type Item = G;
 
     fn next(&mut self) -> Option<Self::Item> {
