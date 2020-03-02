@@ -7,7 +7,7 @@
 use {
     core::fmt::{self, Debug, Display},
     crossbeam_channel::SendError,
-    crossbeam_queue::{PopError, SegQueue},
+    crossbeam_queue::SegQueue,
     std::{error::Error, sync::{Mutex, mpsc::{self, TryRecvError}}},
 };
 
@@ -153,17 +153,22 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     }
 }
 
-#[derive(Debug)]
-pub enum NoneError {
+#[derive(Clone, Copy, Debug)]
+pub enum QueueError {
+    Poisoned,
+    Closed,
 }
 
-impl Display for NoneError {
-    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
+impl Display for QueueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "queue is {}", match self {
+            Self::Closed => "closed",
+            Self::Poisoned => "poisoned",
+        })
     }
 }
 
-impl Error for NoneError {
+impl Error for QueueError {
 }
 
 /// Defines a [`crossbeam_queue::SegQueue`] that implements [`Consumer`] and [`Producer`].
@@ -171,6 +176,8 @@ impl Error for NoneError {
 pub struct UnlimitedQueue<G> {
     /// The queue.
     queue: SegQueue<G>,
+    /// If the queue is closed.
+    is_closed: Mutex<bool>,
 }
 
 impl<G> UnlimitedQueue<G> {
@@ -178,18 +185,39 @@ impl<G> UnlimitedQueue<G> {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn close(&self) {
+        let mut is_closed = self.is_closed.lock().unwrap();
+        *is_closed = true;
+    }
 }
 
 impl<G: Debug> Consumer for UnlimitedQueue<G> {
     type Good = G;
-    type Error = PopError;
+    type Error = QueueError;
 
     fn can_consume(&self) -> bool {
-        !self.queue.is_empty()
+        match self.is_closed.lock() {
+            Err(_) => true,
+            Ok(is_closed) => *is_closed || self.queue.is_empty(),
+        }
     }
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
-        self.queue.pop()
+        let mut consumed = Err(Self::Error::Closed);
+
+        while consumed.is_err() {
+            // Mutex ensures no good is added in between pop and checking is_closed.
+            let is_closed = self.is_closed.lock().map_err(|_| Self::Error::Poisoned)?;
+
+            consumed = self.queue.pop().map_err(|_| Self::Error::Closed);
+
+            if *is_closed {
+                break;
+            }
+        }
+
+        consumed
     }
 }
 
@@ -197,16 +225,24 @@ impl<G> Default for UnlimitedQueue<G> {
     fn default() -> Self {
         Self {
             queue: SegQueue::new(),
+            is_closed: Mutex::new(false),
         }
     }
 }
 
 impl<'a, G> Producer<'a> for UnlimitedQueue<G> {
     type Good = G;
-    type Error = NoneError;
+    type Error = QueueError;
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
-        Ok(self.queue.push(good))
+        // See consume() for use of is_closed.
+        let is_closed = self.is_closed.lock().map_err(|_| Self::Error::Poisoned)?;
+
+        if *is_closed {
+            Err(Self::Error::Closed)
+        } else {
+            Ok(self.queue.push(good))
+        }
     }
 }
 
