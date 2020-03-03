@@ -5,7 +5,7 @@
 //! [`Consumer`]: trait.Consumer.html
 //! [`Producer`]: trait.Producer.html
 use {
-    core::fmt::{self, Debug, Display},
+    core::{sync::atomic::{AtomicBool, Ordering}, fmt::{self, Debug, Display}},
     crossbeam_channel::SendError,
     crossbeam_queue::SegQueue,
     std::{error::Error, sync::{Mutex, mpsc::{self, TryRecvError}}},
@@ -64,7 +64,8 @@ pub trait Producer<'a> {
 
 /// Defines a [`mpsc::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
-pub struct MpscConsumer<G: Debug> {
+pub struct MpscConsumer<G>
+{
     /// The receiver.
     rx: mpsc::Receiver<G>,
     /// The next good to be consumed.
@@ -73,7 +74,10 @@ pub struct MpscConsumer<G: Debug> {
     next_good: Mutex<Option<G>>,
 }
 
-impl<G: Debug> Consumer for MpscConsumer<G> {
+impl<G> Consumer for MpscConsumer<G>
+where
+    G: Debug,
+{
     type Good = G;
     type Error = mpsc::RecvError;
 
@@ -96,7 +100,10 @@ impl<G: Debug> Consumer for MpscConsumer<G> {
     }
 }
 
-impl<G: Debug> From<mpsc::Receiver<G>> for MpscConsumer<G> {
+impl<G> From<mpsc::Receiver<G>> for MpscConsumer<G>
+where
+    G: Debug,
+{
     fn from(value: mpsc::Receiver<G>) -> Self {
         Self {
             rx: value,
@@ -112,7 +119,10 @@ pub struct CrossbeamConsumer<G> {
     rx: crossbeam_channel::Receiver<G>,
 }
 
-impl<G: Debug> Consumer for CrossbeamConsumer<G> {
+impl<G> Consumer for CrossbeamConsumer<G>
+where
+    G: Debug,
+{
     type Good = G;
     type Error = crossbeam_channel::RecvError;
 
@@ -177,7 +187,7 @@ pub struct UnlimitedQueue<G> {
     /// The queue.
     queue: SegQueue<G>,
     /// If the queue is closed.
-    is_closed: Mutex<bool>,
+    is_closed: AtomicBool,
 }
 
 impl<G> UnlimitedQueue<G> {
@@ -187,32 +197,31 @@ impl<G> UnlimitedQueue<G> {
     }
 
     pub fn close(&self) {
-        let mut is_closed = self.is_closed.lock().unwrap();
-        *is_closed = true;
+        self.is_closed.store(false, Ordering::Relaxed);
     }
 }
 
-impl<G: Debug> Consumer for UnlimitedQueue<G> {
+impl<G> Consumer for UnlimitedQueue<G>
+where
+    G: Debug,
+{
     type Good = G;
     type Error = QueueError;
 
     fn can_consume(&self) -> bool {
-        match self.is_closed.lock() {
-            Err(_) => true,
-            Ok(is_closed) => *is_closed || self.queue.is_empty(),
-        }
+        self.is_closed.load(Ordering::Relaxed) || !self.queue.is_empty()
     }
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
         let mut consumed = Err(Self::Error::Closed);
 
         while consumed.is_err() {
-            // Mutex ensures no good is added in between pop and checking is_closed.
-            let is_closed = self.is_closed.lock().map_err(|_| Self::Error::Poisoned)?;
+            // Call pop after loading is_closed to ensure no goods have been added prior to closing.
+            let is_closed = self.is_closed.load(Ordering::Relaxed);
 
             consumed = self.queue.pop().map_err(|_| Self::Error::Closed);
 
-            if *is_closed {
+            if is_closed {
                 break;
             }
         }
@@ -225,7 +234,7 @@ impl<G> Default for UnlimitedQueue<G> {
     fn default() -> Self {
         Self {
             queue: SegQueue::new(),
-            is_closed: Mutex::new(false),
+            is_closed: AtomicBool::new(false),
         }
     }
 }
@@ -235,13 +244,11 @@ impl<'a, G> Producer<'a> for UnlimitedQueue<G> {
     type Error = QueueError;
 
     fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
-        // See consume() for use of is_closed.
-        let is_closed = self.is_closed.lock().map_err(|_| Self::Error::Poisoned)?;
-
-        if *is_closed {
+        if self.is_closed.load(Ordering::Relaxed) {
             Err(Self::Error::Closed)
         } else {
-            Ok(self.queue.push(good))
+            self.queue.push(good);
+            Ok(())
         }
     }
 }
@@ -255,10 +262,77 @@ pub struct GoodsIter<'a, G, E> {
     consumer: &'a dyn Consumer<Good = G, Error = E>,
 }
 
-impl<G: Debug, E: Error> Iterator for GoodsIter<'_, G, E> {
+impl<G, E> Iterator for GoodsIter<'_, G, E>
+where
+    G: Debug,
+    E: Error,
+{
     type Item = G;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.consumer.consume().ok()
+    }
+}
+
+pub trait GoodFinisher {
+    type Intermediate;
+    type Final;
+
+    fn finish(&self, intermediate_good: Self::Intermediate) -> Vec<Self::Final>;
+}
+
+#[derive(Debug)]
+pub struct IntermediateConsumer<I, E, F, G>
+{
+    consumer: Box<dyn Consumer<Good=I, Error=E>>,
+    queue: UnlimitedQueue<G>,
+    finisher: F,
+}
+
+impl<I, E, F, G> IntermediateConsumer<I, E, F, G>
+where
+    I: Debug,
+    E: Error,
+    F: GoodFinisher<Intermediate=I,Final=G>,
+    G: Debug,
+{
+    pub fn new(consumer: impl Consumer<Good=I, Error=E> + 'static, finisher: F) -> Self {
+        Self {
+            consumer: Box::new(consumer),
+            queue: UnlimitedQueue::new(),
+            finisher,
+        }
+    }
+
+    fn process(&self) {
+        while let Some(Ok(intermediate_good)) = self.consumer.optional_consume() {
+            for finished_good in self.finisher.finish(intermediate_good) {
+                let _ = self.queue.produce(finished_good);
+            }
+        }
+    }
+}
+
+impl<I, E, F, G> Consumer for IntermediateConsumer<I, E, F, G>
+where
+    I: Debug,
+    E: Debug + Error,
+    F: Debug + GoodFinisher<Intermediate=I,Final=G>,
+    G: Debug,
+{
+    type Good = G;
+    type Error = <UnlimitedQueue<G> as Consumer>::Error;
+
+    fn can_consume(&self) -> bool {
+        self.process();
+        self.queue.can_consume()
+    }
+
+    fn consume(&self) -> Result<Self::Good, Self::Error> {
+        while !self.can_consume() {
+            self.process();
+        }
+
+        self.queue.consume()
     }
 }
