@@ -14,11 +14,11 @@ use {
 /// Retrieves goods that have been produced.
 ///
 /// Because retrieving a good is failable, a [`Consumer`] actually retrieves a `Result<Self::Good, Self::Error>`.
-pub trait Consumer: Debug {
+pub trait Consumer {
     /// The type of the item returned by a successful consumption.
-    type Good: Debug;
+    type Good;
     /// The type of an error during consumption.
-    type Error: Error;
+    type Error;
 
     /// Returns if [`consume`] will return immediately.
     ///
@@ -27,6 +27,10 @@ pub trait Consumer: Debug {
     /// Returns the next consumable, blocking the current thread if needed.
     ///
     /// The definition of **next** shall be defined by the implementing item.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] when consumer fails to consume a good.
     fn consume(&self) -> Result<Self::Good, Self::Error>;
 
     /// Attempts to consume a good without blocking the current thread.
@@ -59,6 +63,10 @@ pub trait Producer<'a> {
     type Error;
 
     /// Transfers `good` to be consumed, blocking the current thread if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::Error`] when producer fails to produce `good`.
     fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error>;
 }
 
@@ -75,8 +83,6 @@ pub struct MpscConsumer<G>
 }
 
 impl<G> Consumer for MpscConsumer<G>
-where
-    G: Debug,
 {
     type Good = G;
     type Error = mpsc::RecvError;
@@ -96,13 +102,11 @@ where
     }
 
     fn consume(&self) -> Result<Self::Good, Self::Error> {
-        self.next_good.lock().unwrap().take().map(Ok).unwrap_or_else(|| self.rx.recv())
+        self.next_good.lock().unwrap().take().map_or_else(|| self.rx.recv(), Ok)
     }
 }
 
 impl<G> From<mpsc::Receiver<G>> for MpscConsumer<G>
-where
-    G: Debug,
 {
     fn from(value: mpsc::Receiver<G>) -> Self {
         Self {
@@ -120,8 +124,6 @@ pub struct CrossbeamConsumer<G> {
 }
 
 impl<G> Consumer for CrossbeamConsumer<G>
-where
-    G: Debug,
 {
     type Good = G;
     type Error = crossbeam_channel::RecvError;
@@ -148,7 +150,7 @@ pub struct CrossbeamProducer<G> {
     tx: crossbeam_channel::Sender<G>,
 }
 
-impl<'a, G> Producer<'a> for CrossbeamProducer<G> {
+impl<G> Producer<'_> for CrossbeamProducer<G> {
     type Good = G;
     type Error = SendError<G>;
 
@@ -163,25 +165,25 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     }
 }
 
+/// An error consuming or producing with a queue.
 #[derive(Clone, Copy, Debug)]
 pub enum QueueError {
-    Poisoned,
+    /// An error consuming or producing with a closed queue.
     Closed,
 }
 
 impl Display for QueueError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "queue is {}", match self {
-            Self::Closed => "closed",
-            Self::Poisoned => "poisoned",
-        })
+        write!(f, "queue is closed")
     }
 }
 
 impl Error for QueueError {
 }
 
-/// Defines a [`crossbeam_queue::SegQueue`] that implements [`Consumer`] and [`Producer`].
+/// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
+///
+/// An [`UnlimitedQueue`] can be closed, which prevents the [`Producer`] from producing new goods while allowing the [`Consumer`] to consume only the remaining goods on the queue.
 #[derive(Debug)]
 pub struct UnlimitedQueue<G> {
     /// The queue.
@@ -192,18 +194,18 @@ pub struct UnlimitedQueue<G> {
 
 impl<G> UnlimitedQueue<G> {
     /// Creates a new empty [`UnlimitedQueue`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Closes `self`.
     pub fn close(&self) {
         self.is_closed.store(false, Ordering::Relaxed);
     }
 }
 
 impl<G> Consumer for UnlimitedQueue<G>
-where
-    G: Debug,
 {
     type Good = G;
     type Error = QueueError;
@@ -239,7 +241,7 @@ impl<G> Default for UnlimitedQueue<G> {
     }
 }
 
-impl<'a, G> Producer<'a> for UnlimitedQueue<G> {
+impl<G> Producer<'_> for UnlimitedQueue<G> {
     type Good = G;
     type Error = QueueError;
 
@@ -256,16 +258,18 @@ impl<'a, G> Producer<'a> for UnlimitedQueue<G> {
 /// An [`Iterator`] that yields consumed goods, blocking the current thread if needed.
 ///
 /// Shall yield [`None`] if and only if an error occurs during consumption.
-#[derive(Debug)]
 pub struct GoodsIter<'a, G, E> {
     /// The consumer.
     consumer: &'a dyn Consumer<Good = G, Error = E>,
 }
 
+impl<G, E> Debug for GoodsIter<'_, G, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "GoodsIter {{ .. }}")
+    }
+}
+
 impl<G, E> Iterator for GoodsIter<'_, G, E>
-where
-    G: Debug,
-    E: Error,
 {
     type Item = G;
 
@@ -274,51 +278,48 @@ where
     }
 }
 
-pub trait GoodFinisher {
-    type Intermediate;
-    type Final;
-
-    fn finish(&self, intermediate_good: Self::Intermediate) -> Vec<Self::Final>;
+/// A good that can be created from an intermediate good.
+///
+/// This is similar to [`From`] except that [`Strip`] allows any number, including 0, of finished goods.
+pub trait Strip<I>
+where
+    Self: Sized,
+{
+    /// Converts `intermediate_good` into a [`Vec`] of [`Self`].
+    fn finish(intermediate_good: I) -> Vec<Self>;
 }
 
-#[derive(Debug)]
-pub struct IntermediateConsumer<I, E, F, G>
+/// A [`Consumer`] that converts a single intermediate good into any number of finished goods.
+pub struct Stripper<I, E, G>
 {
     consumer: Box<dyn Consumer<Good=I, Error=E>>,
     queue: UnlimitedQueue<G>,
-    finisher: F,
 }
 
-impl<I, E, F, G> IntermediateConsumer<I, E, F, G>
+impl<I, E, G> Stripper<I, E, G>
 where
-    I: Debug,
-    E: Error,
-    F: GoodFinisher<Intermediate=I,Final=G>,
-    G: Debug,
+    G: Strip<I>,
 {
-    pub fn new(consumer: impl Consumer<Good=I, Error=E> + 'static, finisher: F) -> Self {
+    /// Creates a new [`Stripper`]
+    pub fn new(consumer: impl Consumer<Good=I, Error=E> + 'static) -> Self {
         Self {
             consumer: Box::new(consumer),
             queue: UnlimitedQueue::new(),
-            finisher,
         }
     }
 
     fn process(&self) {
         while let Some(Ok(intermediate_good)) = self.consumer.optional_consume() {
-            for finished_good in self.finisher.finish(intermediate_good) {
+            for finished_good in G::finish(intermediate_good) {
                 let _ = self.queue.produce(finished_good);
             }
         }
     }
 }
 
-impl<I, E, F, G> Consumer for IntermediateConsumer<I, E, F, G>
+impl<I, E, G> Consumer for Stripper<I, E, G>
 where
-    I: Debug,
-    E: Debug + Error,
-    F: Debug + GoodFinisher<Intermediate=I,Final=G>,
-    G: Debug,
+    G: Strip<I>,
 {
     type Good = G;
     type Error = <UnlimitedQueue<G> as Consumer>::Error;
@@ -334,5 +335,11 @@ where
         }
 
         self.queue.consume()
+    }
+}
+
+impl<I, G, E> Debug for Stripper<I, G, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Stripper {{ .. }}")
     }
 }
