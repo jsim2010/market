@@ -1,17 +1,23 @@
 //! A library to simplify development with producers and consumers.
 //!
-//! The core purpose of this library is to define the traits [`Consumer`] and [`Producer`]. These traits provide the functionality to send and receive items known as **goods**. The most basic implementations of these traits are the [`mpsc::Receiver`] and [`mpsc::Sender`] structs.
+//! The core purpose of this library is to define the traits [`Consumer`] and [`Producer`]. These traits provide the functionality to send and receive items known as **goods**.
 //!
 //! [`Consumer`]: trait.Consumer.html
 //! [`Producer`]: trait.Producer.html
 use {
     core::{
+        cell::RefCell,
         fmt::{self, Debug, Display},
+        marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::SendError,
     crossbeam_queue::SegQueue,
-    std::{error::Error, sync::mpsc},
+    std::{
+        error::Error,
+        io::{self, Write, BufRead},
+        sync::mpsc,
+    },
 };
 
 /// Retrieves goods that have been produced.
@@ -72,7 +78,7 @@ pub trait Producer<'a> {
 }
 
 /// An error consuming a good.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ConsumeGoodError {
     /// The market is closed.
     Closed,
@@ -205,7 +211,7 @@ impl<G> UnlimitedQueue<G> {
     /// Closes `self`.
     #[inline]
     pub fn close(&self) {
-        self.is_closed.store(false, Ordering::Relaxed);
+        self.is_closed.store(true, Ordering::Relaxed);
     }
 }
 
@@ -279,12 +285,12 @@ impl<G, E> Iterator for GoodsIter<'_, G, E> {
 
 /// Converts a single composite good into parts.
 ///
-/// This is similar to [`From`] except that [`Strip`] allows any number, including 0, of finished goods.
+/// This is similar to [`From`] except that [`Strip`] allows any number, including 0, of parts.
 pub trait Strip<C>
 where
     Self: Sized,
 {
-    /// Converts `composite` into a [`Vec`] of [`Self`].
+    /// Converts `composite` into a [`Vec`] of parts.
     fn strip(composite: C) -> Vec<Self>;
 }
 
@@ -349,16 +355,16 @@ pub trait Validator {
     fn is_valid(&self, good: &Self::Good) -> bool;
 }
 
-/// Filters goods, only consuming those that have been validated.
-pub struct Filter<G, E> {
+/// Filters consumed goods, only consuming those that have been validated.
+pub struct FilterConsumer<G, E> {
     /// The consumer.
     consumer: Box<dyn Consumer<Good = G, Error = E>>,
     /// The validator.
     validator: Box<dyn Validator<Good = G>>,
 }
 
-impl<G, E> Filter<G, E> {
-    /// Creates a new [`Filter`].
+impl<G, E> FilterConsumer<G, E> {
+    /// Creates a new [`FilterConsumer`].
     #[inline]
     pub fn new(
         consumer: impl Consumer<Good = G, Error = E> + 'static,
@@ -371,7 +377,7 @@ impl<G, E> Filter<G, E> {
     }
 }
 
-impl<G, E> Consumer for Filter<G, E> {
+impl<G, E> Consumer for FilterConsumer<G, E> {
     type Good = G;
     type Error = E;
 
@@ -394,9 +400,151 @@ impl<G, E> Consumer for Filter<G, E> {
     }
 }
 
-impl<G, E> Debug for Filter<G, E> {
+impl<G, E> Debug for FilterConsumer<G, E> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Filter {{ .. }}")
+        write!(f, "FilterConsumer {{ .. }}")
+    }
+}
+
+/// Filters produced goods, only producing those that have been validated.
+pub struct FilterProducer<'a, G, E> {
+    /// The producer.
+    producer: Box<dyn Producer<'a, Good = G, Error = E>>,
+    /// The validator.
+    validator: Box<dyn Validator<Good = G>>,
+}
+
+impl<'a, G, E> FilterProducer<'a, G, E> {
+    pub fn new(
+        producer: impl Producer<'a, Good = G, Error = E> + 'static,
+        validator: impl Validator<Good = G> + 'static,
+    ) -> Self {
+        Self {
+            producer: Box::new(producer),
+            validator: Box::new(validator),
+        }
+    }
+}
+
+impl<'a, G, E> Producer<'a> for FilterProducer<'a, G, E> {
+    type Good = G;
+    type Error = E;
+
+    fn produce(&'a self, good: Self::Good) -> Result<(), Self::Error> {
+        if self.validator.is_valid(&good) {
+            self.producer.produce(good)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub trait Writable {
+    type Error;
+
+    fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), Self::Error>;
+}
+
+pub struct Writer<G, W> {
+    phantom: PhantomData<G>,
+    writer: RefCell<W>,
+}
+
+impl<G, W> Writer<G, W> {
+    pub fn new(writer: W) -> Self
+    where
+        W: Write,
+    {
+        Self {
+            writer: RefCell::new(writer),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<G, W> Debug for Writer<G, W> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Writer {{ .. }}")
+    }
+}
+
+impl<G, W> Producer<'_> for Writer<G, W>
+where
+    G: Writable,
+    W: Write,
+{
+    type Good = G;
+    type Error = WriteGoodError<<Self::Good as Writable>::Error>;
+
+    fn produce(&self, good: Self::Good) -> Result<(), Self::Error> {
+        let mut writer = self.writer.borrow_mut();
+        good.write_to(writer.by_ref())?;
+        writer.flush().map_err(Self::Error::Flush)
+    }
+}
+
+#[derive(Debug)]
+pub enum WriteGoodError<T> {
+    Write(T),
+    Flush(io::Error),
+}
+
+impl<T> Display for WriteGoodError<T>
+where
+    T: Display,
+{
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Write(error) => write!(f, "unable to write good: {}", error),
+            Self::Flush(error) => write!(f, "unable to flush: {}", error),
+        }
+    }
+}
+
+impl<T> From<T> for WriteGoodError<T> {
+    fn from(value: T) -> Self {
+        Self::Write(value)
+    }
+}
+
+impl<T> Error for WriteGoodError<T> where T: Debug + Display {}
+
+pub trait Readable
+where
+    Self: Sized,
+{
+    type Error;
+
+    fn from_bytes(bytes: &[u8]) -> (usize, Result<Self, Self::Error>);
+}
+
+pub struct Reader<G, R> {
+    phantom: PhantomData<G>,
+    reader: RefCell<R>,
+    buffer: RefCell<Vec<u8>>,
+}
+
+impl<G, R> Consumer for Reader<G, R>
+where
+    G: Readable,
+    R: BufRead,
+{
+    type Good = G;
+    type Error = io::Error;
+
+    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+        match self.reader.borrow_mut().fill_buf() {
+            Ok(buf) => {
+                self.buffer.borrow_mut().extend_from_slice(buf);
+                let (processed_len, good) = G::from_bytes(&self.buffer.borrow());
+
+                self.buffer.borrow_mut().drain(..processed_len);
+                self.reader.borrow_mut().consume(processed_len);
+                good.ok().map(Ok)
+            }
+            Err(error) => Some(Err(error)),
+        }
     }
 }
