@@ -1,60 +1,59 @@
 //! A library to simplify development with producers and consumers.
 //!
-//! The core purpose of this library is to define the traits [`Consumer`] and [`Producer`]. These traits provide the functionality to send and receive items known as **goods**.
+//! The core purpose of this library is to define the traits [`Consumer`] and [`Producer`]. These traits provide the functionality to send and receive items known as **goods** on a market.
 //!
 //! [`Consumer`]: trait.Consumer.html
 //! [`Producer`]: trait.Producer.html
 use {
     core::{
         cell::RefCell,
-        fmt::{self, Debug, Display},
+        fmt::{self, Debug},
         marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::SendError,
     crossbeam_queue::SegQueue,
     std::{
-        error::Error,
-        io::{self, Write, BufRead},
+        error,
+        io::{self, BufRead, Write},
         sync::mpsc,
     },
+    thiserror::Error,
 };
 
-/// Retrieves goods that have been produced.
+/// Retrieves goods from a defined market.
 ///
-/// Because retrieving a good is failable, a [`Consumer`] actually retrieves a `Result<Self::Good, Self::Error>`.
+/// The order in which available goods are retrieved is defined by the consumer.
 pub trait Consumer {
-    /// The type of the item returned by a successful consumption.
+    /// The type of the item returned by a successful retrieval.
     type Good;
-    /// The type of an error during consumption.
+    /// The type of the error produced when consuming from an invalid market.
+    ///
+    /// An invalid market is one that has no available goods and no current producers.
     type Error;
 
-    /// Attempts to consume the next good without blocking the current thread.
+    /// Attempts to retrieve the next consumable of the market without blocking.
     ///
-    /// The definition of **next** shall be defined by the implementing item.
-    ///
-    /// Returning [`None`] indicates that no consumable was found.
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>>;
+    /// Returning `Ok(None)` indicates that no consumable was available.
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error>;
 
-    /// Continues to attempt consumption until a consumable is found.
+    /// Retrieves the next consumable of the market, blocking until one is found.
     ///
     /// # Errors
     ///
-    /// Returns [`Self::Error`] when consumer fails to consume a good.
+    /// Returns [`Self::Error`] when the market is invalid.
     #[inline]
     fn demand(&self) -> Result<Self::Good, Self::Error> {
         loop {
-            if let Some(result) = self.consume() {
+            if let Some(result) = self.consume().transpose() {
                 return result;
             }
         }
     }
 
-    /// Returns an [`Iterator`] that yields goods, blocking the current thread if needed.
-    ///
-    /// The returned [`Iterator`] shall yield [`None`] if and only if an error occurs during consumption.
+    /// Returns the [`GoodsIter`] of `self`.
     #[inline]
-    fn goods(&self) -> GoodsIter<'_, Self::Good, Self::Error>
+    fn goods(&self) -> GoodsIter<'_, Self>
     where
         Self: Sized,
     {
@@ -62,14 +61,34 @@ pub trait Consumer {
     }
 }
 
-/// Generates goods to be consumed.
+/// An [`Iterator`] that yields consumed goods, blocking if necessary.
+///
+/// Shall yield [`None`] if and only if the market is invalid.
+#[derive(Debug)]
+pub struct GoodsIter<'a, C: Consumer> {
+    /// The consumer.
+    consumer: &'a C,
+}
+
+impl<C: Consumer> Iterator for GoodsIter<'_, C> {
+    type Item = <C as Consumer>::Good;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.consumer.demand().ok()
+    }
+}
+
+/// Generates goods for a defined market.
 pub trait Producer<'a> {
     /// The type of the item being produced.
     type Good;
     /// The type of an error during production.
     type Error;
 
-    /// Transfers `good` to be consumed, blocking the current thread if needed.
+    // TODO: Add a produce() that is non-blocking.
+    // TODO: Change this to force().
+    /// Generates `good` to the market, blocking until a space for the good is available.
     ///
     /// # Errors
     ///
@@ -78,20 +97,12 @@ pub trait Producer<'a> {
 }
 
 /// An error consuming a good.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Error, PartialEq)]
 pub enum ConsumeGoodError {
     /// The market is closed.
+    #[error("unable to consume from closed market")]
     Closed,
 }
-
-impl Display for ConsumeGoodError {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Cannot consume from closed market")
-    }
-}
-
-impl Error for ConsumeGoodError {}
 
 /// Defines a [`mpsc::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
@@ -105,11 +116,11 @@ impl<G> Consumer for MpscConsumer<G> {
     type Error = ConsumeGoodError;
 
     #[inline]
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         match self.rx.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(Self::Error::Closed)),
-            Ok(good) => Some(Ok(good)),
+            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Disconnected) => Err(Self::Error::Closed),
+            Ok(good) => Ok(Some(good)),
         }
     }
 }
@@ -133,11 +144,11 @@ impl<G> Consumer for CrossbeamConsumer<G> {
     type Error = ConsumeGoodError;
 
     #[inline]
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         match self.rx.try_recv() {
-            Err(crossbeam_channel::TryRecvError::Empty) => None,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => Some(Err(Self::Error::Closed)),
-            Ok(good) => Some(Ok(good)),
+            Err(crossbeam_channel::TryRecvError::Empty) => Ok(None),
+            Err(crossbeam_channel::TryRecvError::Disconnected) => Err(Self::Error::Closed),
+            Ok(good) => Ok(Some(good)),
         }
     }
 }
@@ -174,20 +185,12 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
 }
 
 /// An error producing a good.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Error)]
 pub enum ProduceGoodError {
     /// An error consuming or producing with a closed queue.
+    #[error("unable to produce to closed market")]
     Closed,
 }
-
-impl Display for ProduceGoodError {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "queue is closed")
-    }
-}
-
-impl Error for ProduceGoodError {}
 
 /// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
 ///
@@ -220,14 +223,14 @@ impl<G> Consumer for UnlimitedQueue<G> {
     type Error = ConsumeGoodError;
 
     #[inline]
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
         match self.queue.pop() {
-            Ok(good) => Some(Ok(good)),
+            Ok(good) => Ok(Some(good)),
             Err(_) => {
                 if self.is_closed.load(Ordering::Relaxed) {
-                    Some(Err(Self::Error::Closed))
+                    Err(Self::Error::Closed)
                 } else {
-                    None
+                    Ok(None)
                 }
             }
         }
@@ -256,30 +259,6 @@ impl<G> Producer<'_> for UnlimitedQueue<G> {
             self.queue.push(good);
             Ok(())
         }
-    }
-}
-
-/// An [`Iterator`] that yields consumed goods, blocking the current thread if needed.
-///
-/// Shall yield [`None`] if and only if an error occurs during consumption.
-pub struct GoodsIter<'a, G, E> {
-    /// The consumer.
-    consumer: &'a dyn Consumer<Good = G, Error = E>,
-}
-
-impl<G, E> Debug for GoodsIter<'_, G, E> {
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GoodsIter {{ .. }}")
-    }
-}
-
-impl<G, E> Iterator for GoodsIter<'_, G, E> {
-    type Item = G;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.consumer.demand().ok()
     }
 }
 
@@ -316,12 +295,14 @@ where
     }
 
     /// Consumes all available composite goods and strips it for parts.
-    fn strip(&self) {
-        while let Some(Ok(composite)) = self.consumer.consume() {
+    fn strip(&self) -> Result<(), E> {
+        while let Some(composite) = self.consumer.consume()? {
             for part in P::strip(composite) {
                 let _ = self.parts.produce(part);
             }
         }
+
+        Ok(())
     }
 }
 
@@ -330,12 +311,12 @@ where
     P: Strip<C>,
 {
     type Good = P;
-    type Error = <UnlimitedQueue<P> as Consumer>::Error;
+    type Error = E;
 
     #[inline]
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        self.strip();
-        self.parts.consume()
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        self.strip()?;
+        Ok(self.parts.consume().expect("consuming from parts queue"))
     }
 }
 
@@ -382,21 +363,14 @@ impl<G, E> Consumer for FilterConsumer<G, E> {
     type Error = E;
 
     #[inline]
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        while let Some(input_consumption) = self.consumer.consume() {
-            match input_consumption {
-                Ok(input) => {
-                    if self.validator.is_valid(&input) {
-                        return Some(Ok(input));
-                    }
-                }
-                Err(error) => {
-                    return Some(Err(error));
-                }
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        while let Some(input) = self.consumer.consume()? {
+            if self.validator.is_valid(&input) {
+                return Ok(Some(input));
             }
         }
 
-        None
+        Ok(None)
     }
 }
 
@@ -446,16 +420,14 @@ pub trait Writable {
     fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), Self::Error>;
 }
 
+#[derive(Debug)]
 pub struct Writer<G, W> {
     phantom: PhantomData<G>,
     writer: RefCell<W>,
 }
 
 impl<G, W> Writer<G, W> {
-    pub fn new(writer: W) -> Self
-    where
-        W: Write,
-    {
+    pub fn new(writer: W) -> Self {
         Self {
             writer: RefCell::new(writer),
             phantom: PhantomData,
@@ -463,15 +435,10 @@ impl<G, W> Writer<G, W> {
     }
 }
 
-impl<G, W> Debug for Writer<G, W> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Writer {{ .. }}")
-    }
-}
-
 impl<G, W> Producer<'_> for Writer<G, W>
 where
     G: Writable,
+    <G as Writable>::Error: Debug + error::Error + 'static,
     W: Write,
 {
     type Good = G;
@@ -484,67 +451,77 @@ where
     }
 }
 
-#[derive(Debug)]
-pub enum WriteGoodError<T> {
-    Write(T),
-    Flush(io::Error),
+#[derive(Debug, Error)]
+pub enum WriteGoodError<T: Debug + error::Error + 'static> {
+    #[error("{0}")]
+    Write(#[source] T),
+    #[error("{0}")]
+    Flush(#[source] io::Error),
 }
 
-impl<T> Display for WriteGoodError<T>
-where
-    T: Display,
-{
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Write(error) => write!(f, "unable to write good: {}", error),
-            Self::Flush(error) => write!(f, "unable to flush: {}", error),
-        }
-    }
-}
-
-impl<T> From<T> for WriteGoodError<T> {
+impl<T: Debug + error::Error> From<T> for WriteGoodError<T> {
     fn from(value: T) -> Self {
         Self::Write(value)
     }
 }
 
-impl<T> Error for WriteGoodError<T> where T: Debug + Display {}
-
 pub trait Readable
 where
     Self: Sized,
 {
-    type Error;
+    type Error: error::Error;
 
     fn from_bytes(bytes: &[u8]) -> (usize, Result<Self, Self::Error>);
 }
 
+#[derive(Debug)]
 pub struct Reader<G, R> {
     phantom: PhantomData<G>,
     reader: RefCell<R>,
     buffer: RefCell<Vec<u8>>,
 }
 
+impl<G, R> Reader<G, R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            buffer: RefCell::new(Vec::new()),
+            reader: RefCell::new(reader),
+            phantom: PhantomData,
+        }
+    }
+}
+
 impl<G, R> Consumer for Reader<G, R>
 where
-    G: Readable,
+    G: Readable + Debug,
+    <G as Readable>::Error: Debug + 'static,
     R: BufRead,
 {
     type Good = G;
-    type Error = io::Error;
+    type Error = ReadGoodError<G>;
 
-    fn consume(&self) -> Option<Result<Self::Good, Self::Error>> {
-        match self.reader.borrow_mut().fill_buf() {
-            Ok(buf) => {
-                self.buffer.borrow_mut().extend_from_slice(buf);
-                let (processed_len, good) = G::from_bytes(&self.buffer.borrow());
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        let mut reader = self.reader.borrow_mut();
+        let buf = reader.fill_buf()?;
+        let consumed_len = buf.len();
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.extend_from_slice(buf);
+        let (processed_len, good) = G::from_bytes(&buffer);
 
-                self.buffer.borrow_mut().drain(..processed_len);
-                self.reader.borrow_mut().consume(processed_len);
-                good.ok().map(Ok)
-            }
-            Err(error) => Some(Err(error)),
-        }
+        buffer.drain(..processed_len);
+        reader.consume(consumed_len);
+        good.map(Some).map_err(Self::Error::Deserialize)
     }
+}
+
+#[derive(Debug, Error)]
+pub enum ReadGoodError<G>
+where
+    G: Readable + Debug,
+    <G as Readable>::Error: Debug + 'static,
+{
+    #[error("{0}")]
+    Read(#[from] io::Error),
+    #[error("{0}")]
+    Deserialize(#[source] <G as Readable>::Error),
 }
