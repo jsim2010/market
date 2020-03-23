@@ -72,8 +72,12 @@ impl<G> Producer<'_> for CrossbeamProducer<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn force(&self, record: Self::Good) -> Result<(), Self::Error> {
-        self.tx.send(record).map_err(|_| ClosedMarketError)
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+        match self.tx.try_send(good) {
+            Err(crossbeam_channel::TrySendError::Full(g)) => Ok(Some(g)),
+            Err(crossbeam_channel::TrySendError::Disconnected(..)) => Err(ClosedMarketError),
+            Ok(()) => Ok(None),
+        }
     }
 }
 
