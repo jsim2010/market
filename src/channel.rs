@@ -67,7 +67,7 @@ pub struct CrossbeamProducer<G> {
     tx: crossbeam_channel::Sender<G>,
 }
 
-impl<G> Producer<'_> for CrossbeamProducer<G> {
+impl<G> Producer for CrossbeamProducer<G> {
     type Good = G;
     type Error = ClosedMarketError;
 

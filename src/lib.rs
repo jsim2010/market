@@ -18,8 +18,8 @@ use {
     },
     crossbeam_queue::SegQueue,
     std::{
-        sync::Mutex,
         io::{self, BufRead, Write},
+        sync::Mutex,
     },
     thiserror::Error as ThisError,
 };
@@ -72,7 +72,7 @@ pub trait Consumer {
 }
 
 /// Produces goods by adding them to the stock of a market.
-pub trait Producer<'a> {
+pub trait Producer {
     /// The item being produced.
     type Good;
     /// The error when `Self` is not functional.
@@ -86,11 +86,11 @@ pub trait Producer<'a> {
     /// Attempts to add `good` to the market without blocking.
     ///
     /// Returns `Some(good)` if `self` desired to add it to its stock but the stock was full. Otherwise returns `None`.
-    /// 
+    ///
     /// # Errors
     ///
     /// An error indicates `self` is not functional.
-    fn produce(&'a self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error>;
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error>;
 
     /// Attempts to add each good in `goods` to the market without blocking.
     ///
@@ -100,7 +100,7 @@ pub trait Producer<'a> {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn produce_all(&'a self, goods: Vec<Self::Good>) -> Result<Vec<Self::Good>, Self::Error> {
+    fn produce_all(&self, goods: Vec<Self::Good>) -> Result<Vec<Self::Good>, Self::Error> {
         let mut new_goods = Vec::new();
 
         for good in goods {
@@ -122,7 +122,7 @@ pub trait Producer<'a> {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn force(&'a self, mut good: Self::Good) -> Result<(), Self::Error> {
+    fn force(&self, mut good: Self::Good) -> Result<(), Self::Error> {
         while let Some(new_good) = self.produce(good)? {
             good = new_good;
         }
@@ -159,33 +159,38 @@ where
 }
 
 /// An error producing parts.
-#[derive(Debug)]
-pub enum StripError<T> {
+#[derive(Debug, ThisError)]
+pub enum StripError<T>
+where
+    T: Debug,
+{
     /// An error locking the mutex.
+    #[error("")]
     Lock,
     /// An error producing the part.
+    #[error("")]
     Error(T),
 }
 
 /// A [`Producer`] of type `P` that produces parts stripped from goods of type `G`.
 #[derive(Debug)]
-pub struct StrippingProducer<'a, G, P>
+pub struct StrippingProducer<G, P>
 where
-    P: Producer<'a>,
-    <P as Producer<'a>>::Good: Debug,
+    P: Producer,
+    <P as Producer>::Good: Debug,
 {
     #[doc(hidden)]
     phantom: PhantomData<G>,
     /// The producer of parts.
     producer: P,
     /// Parts stripped from a composite good yet to be produced.
-    parts: Mutex<Vec<<P as Producer<'a>>::Good>>,
+    parts: Mutex<Vec<<P as Producer>::Good>>,
 }
 
-impl<'a, G, P> StrippingProducer<'a, G, P>
+impl<G, P> StrippingProducer<G, P>
 where
-    P: Producer<'a>,
-    <P as Producer<'a>>::Good: Debug,
+    P: Producer,
+    <P as Producer>::Good: Debug,
 {
     /// Creates a new [`StrippingProducer`].
     #[inline]
@@ -198,24 +203,28 @@ where
     }
 }
 
-impl<'a, G, P> Producer<'a> for StrippingProducer<'a, G, P>
+impl<G, P> Producer for StrippingProducer<G, P>
 where
-    P: Producer<'a>,
-    <P as Producer<'a>>::Good: StripFrom<G> + Clone + Debug,
+    P: Producer,
+    <P as Producer>::Good: StripFrom<G> + Clone + Debug,
+    <P as Producer>::Error: Debug,
 {
     type Good = G;
-    type Error = StripError<<P as Producer<'a>>::Error>;
+    type Error = StripError<<P as Producer>::Error>;
 
     #[inline]
-    fn produce(&'a self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         let mut parts = self.parts.lock().map_err(|_| Self::Error::Lock)?;
 
         if parts.is_empty() {
-            *parts = <P as Producer<'a>>::Good::strip_from(&good);
+            *parts = <P as Producer>::Good::strip_from(&good);
         }
 
-        *parts = self.producer.produce_all(parts.to_vec()).map_err(Self::Error::Error)?;
-        Ok(if parts.is_empty() {None} else {Some(good)})
+        *parts = self
+            .producer
+            .produce_all(parts.to_vec())
+            .map_err(Self::Error::Error)?;
+        Ok(if parts.is_empty() { None } else { Some(good) })
     }
 }
 
@@ -304,14 +313,10 @@ pub struct VigilantConsumer<C, I> {
     inspector: I,
 }
 
-impl<C, I> VigilantConsumer<C, I>
-{
+impl<C, I> VigilantConsumer<C, I> {
     /// Creates a new [`VigilantConsumer`].
     #[inline]
-    pub const fn new(
-        consumer: C,
-        inspector: I,
-    ) -> Self {
+    pub const fn new(consumer: C, inspector: I) -> Self {
         Self {
             consumer,
             inspector,
@@ -322,7 +327,7 @@ impl<C, I> VigilantConsumer<C, I>
 impl<C, I> Consumer for VigilantConsumer<C, I>
 where
     C: Consumer,
-    I: Inspector<Good=<C as Consumer>::Good>,
+    I: Inspector<Good = <C as Consumer>::Good>,
 {
     type Good = <C as Consumer>::Good;
     type Error = <C as Consumer>::Error;
@@ -348,14 +353,10 @@ pub struct ApprovedProducer<P, I> {
     inspector: I,
 }
 
-impl<P, I> ApprovedProducer<P, I>
-{
+impl<P, I> ApprovedProducer<P, I> {
     /// Creates a new [`ApprovedProducer`].
     #[inline]
-    pub const fn new(
-        producer: P,
-        inspector: I,
-    ) -> Self {
+    pub const fn new(producer: P, inspector: I) -> Self {
         Self {
             producer,
             inspector,
@@ -363,16 +364,16 @@ impl<P, I> ApprovedProducer<P, I>
     }
 }
 
-impl<'a, P, I> Producer<'a> for ApprovedProducer<P, I>
+impl<P, I> Producer for ApprovedProducer<P, I>
 where
-    P: Producer<'a>,
-    I: Inspector<Good=<P as Producer<'a>>::Good>,
+    P: Producer,
+    I: Inspector<Good = <P as Producer>::Good>,
 {
-    type Good = <P as Producer<'a>>::Good;
-    type Error = <P as Producer<'a>>::Error;
+    type Good = <P as Producer>::Good;
+    type Error = <P as Producer>::Error;
 
     #[inline]
-    fn produce(&'a self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
         if self.inspector.allows(&good) {
             self.producer.produce(good)
         } else {
@@ -398,7 +399,7 @@ impl<W> ByteWriter<W> {
     }
 }
 
-impl<W> Producer<'_> for ByteWriter<W>
+impl<W> Producer for ByteWriter<W>
 where
     W: Write,
 {
@@ -407,7 +408,11 @@ where
 
     #[inline]
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        Ok(if self.writer.borrow_mut().write(&[good])? == 0 {Some(good)} else {None})
+        Ok(if self.writer.borrow_mut().write(&[good])? == 0 {
+            Some(good)
+        } else {
+            None
+        })
     }
 
     #[inline]
@@ -527,7 +532,7 @@ impl<G> Default for UnlimitedQueue<G> {
     }
 }
 
-impl<G> Producer<'_> for UnlimitedQueue<G> {
+impl<G> Producer for UnlimitedQueue<G> {
     type Good = G;
     type Error = ClosedMarketError;
 
@@ -570,7 +575,7 @@ impl<G> Consumer for PermanentQueue<G> {
     }
 }
 
-impl<G> Producer<'_> for PermanentQueue<G> {
+impl<G> Producer for PermanentQueue<G> {
     type Good = G;
     type Error = NeverErr;
 
