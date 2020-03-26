@@ -8,6 +8,7 @@
 )]
 
 pub mod channel;
+pub mod io;
 
 use {
     core::{
@@ -17,10 +18,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
-    std::{
-        io::{self, BufRead, Write},
-        sync::Mutex,
-    },
+    std::sync::Mutex,
     thiserror::Error as ThisError,
 };
 
@@ -295,6 +293,57 @@ where
     fn compose_from(parts: &mut Vec<G>) -> Option<Self>;
 }
 
+/// Consumes composite goods of type `G` from a parts [`Consumer`] of type `C`.
+#[derive(Debug)]
+pub struct ComposingConsumer<C, G>
+where
+    C: Consumer,
+    <C as Consumer>::Good: Debug,
+{
+    /// The consumer.
+    consumer: C,
+    /// The current buffer of parts.
+    buffer: RefCell<Vec<<C as Consumer>::Good>>,
+    #[doc(hidden)]
+    phantom: PhantomData<G>,
+}
+
+impl<C, G> ComposingConsumer<C, G>
+where
+    C: Consumer,
+    <C as Consumer>::Good: Debug,
+{
+    /// Creates a new [`ComposingConsumer`].
+    #[inline]
+    pub fn new(consumer: C) -> Self {
+        Self {
+            consumer,
+            buffer: RefCell::new(Vec::new()),
+            phantom: PhantomData,
+        }
+    }
+}
+
+impl<C, G> Consumer for ComposingConsumer<C, G>
+where
+    C: Consumer,
+    G: ComposeFrom<<C as Consumer>::Good>,
+    <C as Consumer>::Good: Debug,
+{
+    type Good = G;
+    type Error = <C as Consumer>::Error;
+
+    #[inline]
+    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+        Ok(self.consumer.consume()?.and_then(|good| {
+            let mut buffer = self.buffer.borrow_mut();
+            buffer.push(good);
+            //log::trace!("buf: {:?}", String::from_utf8(buffer.to_vec()));
+            G::compose_from(&mut buffer)
+        }))
+    }
+}
+
 /// Inspects if goods meet defined requirements.
 pub trait Inspector {
     /// The good to be inspected.
@@ -379,92 +428,6 @@ where
         } else {
             Ok(None)
         }
-    }
-}
-
-/// Produces bytes to a writer of type `W`.
-#[derive(Debug)]
-pub struct ByteWriter<W> {
-    /// The writer.
-    writer: RefCell<W>,
-}
-
-impl<W> ByteWriter<W> {
-    /// Creates a new [`ByteWriter`].
-    #[inline]
-    pub const fn new(writer: W) -> Self {
-        Self {
-            writer: RefCell::new(writer),
-        }
-    }
-}
-
-impl<W> Producer for ByteWriter<W>
-where
-    W: Write,
-{
-    type Good = u8;
-    type Error = io::Error;
-
-    #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        Ok(if self.writer.borrow_mut().write(&[good])? == 0 {
-            Some(good)
-        } else {
-            None
-        })
-    }
-
-    #[inline]
-    fn produce_all(&self, mut goods: Vec<Self::Good>) -> Result<Vec<Self::Good>, Self::Error> {
-        #[allow(unused_results)] // Drained goods are no longer needed.
-        {
-            goods.drain(..self.writer.borrow_mut().write(&goods)?);
-        }
-        Ok(goods)
-    }
-}
-
-/// Reads goods of type `G` from a reader of type `R`.
-#[derive(Debug)]
-pub struct Reader<G, R> {
-    #[doc(hidden)]
-    phantom: PhantomData<G>,
-    /// The reader.
-    reader: RefCell<R>,
-    /// The current buffer of bytes.
-    buffer: RefCell<Vec<u8>>,
-}
-
-impl<G, R> Reader<G, R> {
-    /// Creates a new [`Reader`].
-    #[inline]
-    pub fn new(reader: R) -> Self {
-        Self {
-            buffer: RefCell::new(Vec::new()),
-            reader: RefCell::new(reader),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<G, R> Consumer for Reader<G, R>
-where
-    G: ComposeFrom<u8>,
-    R: BufRead,
-{
-    type Good = G;
-    type Error = io::Error;
-
-    #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        let mut reader = self.reader.borrow_mut();
-        let buf = reader.fill_buf()?;
-        let consumed_len = buf.len();
-        let mut buffer = self.buffer.borrow_mut();
-        buffer.extend_from_slice(buf);
-        reader.consume(consumed_len);
-        Ok(G::compose_from(&mut buffer))
     }
 }
 
