@@ -99,19 +99,19 @@ pub trait Producer {
     /// An error indicates `self` is not functional.
     #[inline]
     fn produce_all(&self, goods: Vec<Self::Good>) -> Result<Vec<Self::Good>, Self::Error> {
-        let mut new_goods = Vec::new();
+        let mut failed_goods = Vec::new();
 
         for good in goods {
-            if new_goods.is_empty() {
+            if failed_goods.is_empty() {
                 if let Some(new_good) = self.produce(good)? {
-                    new_goods.push(new_good);
+                    failed_goods.push(new_good);
                 }
             } else {
-                new_goods.push(good);
+                failed_goods.push(good);
             }
         }
 
-        Ok(new_goods)
+        Ok(failed_goods)
     }
 
     /// Adds `good` to the market, blocking if needed.
@@ -123,6 +123,20 @@ pub trait Producer {
     fn force(&self, mut good: Self::Good) -> Result<(), Self::Error> {
         while let Some(new_good) = self.produce(good)? {
             good = new_good;
+        }
+
+        Ok(())
+    }
+
+    /// Adds `goods` to the market, blocking if needed.
+    ///
+    /// # Errors
+    ///
+    /// An error indicates `self` is not functional.
+    #[inline]
+    fn force_all(&self, goods: Vec<Self::Good>) -> Result<(), Self::Error> {
+        for good in goods {
+            self.force(good)?;
         }
 
         Ok(())
