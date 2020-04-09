@@ -208,18 +208,14 @@ impl ByteProducer {
 
         let join_handle = thread::spawn(move || {
             let mut buffer = [0; 1024];
-            let mut len = 0;
+            let mut len: usize = 0;
 
             while !is_quitting.load(Ordering::Relaxed) {
                 for element in buffer.iter_mut() {
                     match rx.try_recv() {
                         Ok(byte) => {
                             *element = byte;
-                            #[allow(clippy::integer_arithmetic)]
-                            {
-                                // Overflow cannot occur since len = 0 at start of for loop and loop only iterates buffer.len() times.
-                                len += 1;
-                            }
+                            len = len.saturating_add(1);
                         }
                         Err(TryRecvError::Empty) => {
                             break;

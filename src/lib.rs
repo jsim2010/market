@@ -2,11 +2,6 @@
 //!
 //! The core purpose of this library is to define the traits of items that interact with markets. A market stores goods that have been produced in its stock until they are consumed.
 
-#![allow(
-    clippy::empty_enum, // Recommended ! type is not stable.
-    clippy::implicit_return, // Goes against rust convention.
-)]
-
 pub mod channel;
 pub mod io;
 
@@ -18,7 +13,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
-    std::sync::Mutex,
+    std::{error::Error, sync::Mutex},
     thiserror::Error as ThisError,
 };
 
@@ -58,15 +53,6 @@ pub trait Consumer {
             }
         }
     }
-
-    /// Creates a blocking iterator that yields goods from the market.
-    #[inline]
-    fn goods(&self) -> GoodsIter<'_, Self>
-    where
-        Self: Sized,
-    {
-        GoodsIter { consumer: self }
-    }
 }
 
 /// Produces goods by adding them to the stock of a market.
@@ -89,6 +75,23 @@ pub trait Producer {
     ///
     /// An error indicates `self` is not functional.
     fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error>;
+
+    /// Attempts to add `good to the market without blocking, returning an error if `good` was not added.
+    ///
+    /// # Errors
+    ///
+    /// An error indicates `self` is not functional or `self` desired to add `good` but the stock was full.
+    #[inline]
+    fn one_shot(&self, good: Self::Good) -> Result<(), OneShotError<Self::Error>>
+    where
+        Self::Error: Debug + Error,
+    {
+        if self.produce(good)?.is_none() {
+            Ok(())
+        } else {
+            Err(OneShotError::Full)
+        }
+    }
 
     /// Attempts to add each good in `goods` to the market without blocking.
     ///
@@ -143,24 +146,6 @@ pub trait Producer {
     }
 }
 
-/// An [`Iterator`] that yields consumed goods, blocking if necessary.
-///
-/// Shall yield [`None`] if and only if the consumer is not functional.
-#[derive(Debug)]
-pub struct GoodsIter<'a, C: Consumer> {
-    /// The consumer.
-    consumer: &'a C,
-}
-
-impl<C: Consumer> Iterator for GoodsIter<'_, C> {
-    type Item = <C as Consumer>::Good;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        self.consumer.demand().ok()
-    }
-}
-
 /// Converts a single good into parts.
 pub trait StripFrom<G>
 where
@@ -168,6 +153,20 @@ where
 {
     /// Converts `good` into [`Vec`] of parts.
     fn strip_from(good: &G) -> Vec<Self>;
+}
+
+/// An error when a [`Producer`] is trying to produce in a single shot.
+#[derive(Debug, ThisError)]
+pub enum OneShotError<E>
+where
+    E: Debug + Error + 'static,
+{
+    /// The [`Producer`] is invalid.
+    #[error(transparent)]
+    Error(#[from] E),
+    /// The stock was full.
+    #[error("stock was full")]
+    Full,
 }
 
 /// An error producing parts.
