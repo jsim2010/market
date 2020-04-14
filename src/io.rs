@@ -6,6 +6,7 @@ use {
     },
     core::sync::atomic::{AtomicBool, Ordering},
     crossbeam_channel::TryRecvError,
+    fehler::{throw, throws},
     log::error,
     std::{
         io::{self, ErrorKind, Read, Write},
@@ -42,8 +43,9 @@ where
     type Error = <ComposingConsumer<ByteConsumer, G> as Consumer>::Error;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        self.consumer.consume()
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        self.consumer.consume()?
     }
 }
 
@@ -75,8 +77,9 @@ where
     type Error = <StrippingProducer<G, ByteProducer> as Producer>::Error;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
-        self.producer.produce(good)
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+        self.producer.produce(good)?
     }
 }
 
@@ -156,7 +159,8 @@ impl Consumer for ByteConsumer {
     type Error = io::Error;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         // consumer.consume() errs when the thread ends due to either read() or send() error.
         self.consumer.consume().or_else(|_| {
             Err(if let Ok(Some(error)) = self.error_consumer.consume() {
@@ -164,7 +168,7 @@ impl Consumer for ByteConsumer {
             } else {
                 io::Error::new(ErrorKind::Other, "failed to retrieve error")
             })
-        })
+        })?
     }
 }
 
@@ -280,13 +284,14 @@ impl Producer for ByteProducer {
     type Error = io::Error;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if let Ok(Some(error)) = self.error_consumer.consume() {
-            Err(error)
+            throw!(error);
         } else {
             self.producer
                 .produce(good)
-                .map_err(|_| io::Error::new(ErrorKind::Other, "failed to send bytes"))
+                .map_err(|_| io::Error::new(ErrorKind::Other, "failed to send bytes"))?
         }
     }
 }

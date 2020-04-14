@@ -13,6 +13,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
+    fehler::{throw, throws},
     std::{error::Error, sync::Mutex},
     thiserror::Error as ThisError,
 };
@@ -38,7 +39,8 @@ pub trait Consumer {
     /// # Errors
     ///
     /// An error indicates `self` is not functional.
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error>;
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good>;
 
     /// Retrieves the next good from the market, blocking if needed.
     ///
@@ -46,12 +48,18 @@ pub trait Consumer {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn demand(&self) -> Result<Self::Good, Self::Error> {
+    #[throws(Self::Error)]
+    fn demand(&self) -> Self::Good {
+        let good;
+
         loop {
-            if let Some(result) = self.consume().transpose() {
-                return result;
+            if let Some(g) = self.consume()? {
+                good = g;
+                break;
             }
         }
+
+        good
     }
 }
 
@@ -74,7 +82,8 @@ pub trait Producer {
     /// # Errors
     ///
     /// An error indicates `self` is not functional.
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error>;
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good>;
 
     /// Attempts to add `good to the market without blocking, returning an error if `good` was not added.
     ///
@@ -82,14 +91,13 @@ pub trait Producer {
     ///
     /// An error indicates `self` is not functional or `self` desired to add `good` but the stock was full.
     #[inline]
-    fn one_shot(&self, good: Self::Good) -> Result<(), OneShotError<Self::Error>>
+    #[throws(OneShotError<Self::Error>)]
+    fn one_shot(&self, good: Self::Good)
     where
         Self::Error: Debug + Error,
     {
-        if self.produce(good)?.is_none() {
-            Ok(())
-        } else {
-            Err(OneShotError::Full)
+        if self.produce(good)?.is_some() {
+            throw!(OneShotError::Full);
         }
     }
 
@@ -101,7 +109,8 @@ pub trait Producer {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn produce_all(&self, goods: Vec<Self::Good>) -> Result<Vec<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce_all(&self, goods: Vec<Self::Good>) -> Vec<Self::Good> {
         let mut failed_goods = Vec::new();
 
         for good in goods {
@@ -114,7 +123,7 @@ pub trait Producer {
             }
         }
 
-        Ok(failed_goods)
+        failed_goods
     }
 
     /// Adds `good` to the market, blocking if needed.
@@ -123,12 +132,11 @@ pub trait Producer {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn force(&self, mut good: Self::Good) -> Result<(), Self::Error> {
+    #[throws(Self::Error)]
+    fn force(&self, mut good: Self::Good) {
         while let Some(new_good) = self.produce(good)? {
             good = new_good;
         }
-
-        Ok(())
     }
 
     /// Adds `goods` to the market, blocking if needed.
@@ -137,12 +145,11 @@ pub trait Producer {
     ///
     /// An error indicates `self` is not functional.
     #[inline]
-    fn force_all(&self, goods: Vec<Self::Good>) -> Result<(), Self::Error> {
+    #[throws(Self::Error)]
+    fn force_all(&self, goods: Vec<Self::Good>) {
         for good in goods {
             self.force(good)?;
         }
-
-        Ok(())
     }
 }
 
@@ -224,18 +231,23 @@ where
     type Error = StripError<<P as Producer>::Error>;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         let mut parts = self.parts.lock().map_err(|_| Self::Error::Lock)?;
 
         if parts.is_empty() {
-            *parts = <P as Producer>::Good::strip_from(&good);
+            *parts = <<P as Producer>::Good>::strip_from(&good);
         }
 
         *parts = self
             .producer
             .produce_all(parts.to_vec())
             .map_err(Self::Error::Error)?;
-        Ok(if parts.is_empty() { None } else { Some(good) })
+        if parts.is_empty() {
+            None
+        } else {
+            Some(good)
+        }
     }
 }
 
@@ -263,14 +275,13 @@ where
     }
 
     /// Consumes all stocked composite goods and strips them into parts.
-    fn strip(&self) -> Result<(), <C as Consumer>::Error> {
+    #[throws(<C as Consumer>::Error)]
+    fn strip(&self) {
         while let Some(composite) = self.consumer.consume()? {
             for part in P::strip_from(&composite) {
                 self.parts.push(part);
             }
         }
-
-        Ok(())
     }
 }
 
@@ -283,16 +294,17 @@ where
     type Error = <C as Consumer>::Error;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         // Store result of strip because all stocked parts should be consumed prior to failing.
         let strip_result = self.strip();
 
         if let Ok(part) = self.parts.pop() {
-            Ok(Some(part))
+            Some(part)
         } else if let Err(error) = strip_result {
-            Err(error)
+            throw!(error);
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -347,13 +359,14 @@ where
     type Error = <C as Consumer>::Error;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        Ok(self.consumer.consume()?.and_then(|good| {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        self.consumer.consume()?.and_then(|good| {
             let mut buffer = self.buffer.borrow_mut();
             buffer.push(good);
             //log::trace!("buf: {:?}", String::from_utf8(buffer.to_vec()));
             G::compose_from(&mut buffer)
-        }))
+        })
     }
 }
 
@@ -395,14 +408,15 @@ where
     type Error = <C as Consumer>::Error;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         while let Some(input) = self.consumer.consume()? {
             if self.inspector.allows(&input) {
-                return Ok(Some(input));
+                return Some(input);
             }
         }
 
-        Ok(None)
+        None
     }
 }
 
@@ -435,11 +449,12 @@ where
     type Error = <P as Producer>::Error;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if self.inspector.allows(&good) {
-            self.producer.produce(good)
+            self.producer.produce(good)?
         } else {
-            Ok(None)
+            None
         }
     }
 }
@@ -484,14 +499,15 @@ impl<G> Consumer for UnlimitedQueue<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         match self.queue.pop() {
-            Ok(good) => Ok(Some(good)),
+            Ok(good) => Some(good),
             Err(_) => {
                 if self.is_closed.load(Ordering::Relaxed) {
-                    Err(ClosedMarketError)
+                    throw!(ClosedMarketError);
                 } else {
-                    Ok(None)
+                    None
                 }
             }
         }
@@ -513,12 +529,13 @@ impl<G> Producer for UnlimitedQueue<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         if self.is_closed.load(Ordering::Relaxed) {
-            Err(ClosedMarketError)
+            throw!(ClosedMarketError);
         } else {
             self.queue.push(good);
-            Ok(None)
+            None
         }
     }
 }
@@ -546,8 +563,9 @@ impl<G> Consumer for PermanentQueue<G> {
     type Error = NeverErr;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
-        Ok(self.queue.pop().ok())
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
+        self.queue.pop().ok()
     }
 }
 
@@ -556,8 +574,9 @@ impl<G> Producer for PermanentQueue<G> {
     type Error = NeverErr;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         self.queue.push(good);
-        Ok(None)
+        None
     }
 }

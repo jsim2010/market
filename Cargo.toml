@@ -16,5 +16,6 @@ edition = "2018"
 crossbeam-channel = "0.4.0"
 # With, 0.2.1, unable to find impl Error for PopError
 crossbeam-queue = "= 0.2.0"
+fehler = "1.0.0"
 log = "0.4.8"
 thiserror = "1.0.11"

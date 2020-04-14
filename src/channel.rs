@@ -1,6 +1,7 @@
 //! [`Consumer`] and [`Producer`] implementations for different channel implementations.
 use {
     crate::{ClosedMarketError, Consumer, Producer},
+    fehler::{throw, throws},
     std::sync::mpsc,
 };
 
@@ -16,11 +17,12 @@ impl<G> Consumer for MpscConsumer<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         match self.rx.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(mpsc::TryRecvError::Disconnected) => Err(ClosedMarketError),
-            Ok(good) => Ok(Some(good)),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => throw!(ClosedMarketError),
+            Ok(good) => Some(good),
         }
     }
 }
@@ -44,11 +46,12 @@ impl<G> Consumer for CrossbeamConsumer<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn consume(&self) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn consume(&self) -> Option<Self::Good> {
         match self.rx.try_recv() {
-            Err(crossbeam_channel::TryRecvError::Empty) => Ok(None),
-            Err(crossbeam_channel::TryRecvError::Disconnected) => Err(ClosedMarketError),
-            Ok(good) => Ok(Some(good)),
+            Err(crossbeam_channel::TryRecvError::Empty) => None,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => throw!(ClosedMarketError),
+            Ok(good) => Some(good),
         }
     }
 }
@@ -72,11 +75,12 @@ impl<G> Producer for CrossbeamProducer<G> {
     type Error = ClosedMarketError;
 
     #[inline]
-    fn produce(&self, good: Self::Good) -> Result<Option<Self::Good>, Self::Error> {
+    #[throws(Self::Error)]
+    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
         match self.tx.try_send(good) {
-            Err(crossbeam_channel::TrySendError::Full(g)) => Ok(Some(g)),
-            Err(crossbeam_channel::TrySendError::Disconnected(..)) => Err(ClosedMarketError),
-            Ok(()) => Ok(None),
+            Err(crossbeam_channel::TrySendError::Full(g)) => Some(g),
+            Err(crossbeam_channel::TrySendError::Disconnected(..)) => throw!(ClosedMarketError),
+            Ok(()) => None,
         }
     }
 }
