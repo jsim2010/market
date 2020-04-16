@@ -37,6 +37,7 @@ format:
 # - clippy::nursery: nursery lints are not fully developed
 # - clippy::indexing_slicing: required by EnumMap
 # - clippy::unreachable: required by Enum
+# - clippy::use_debug: invalid check in Debug impl
 # ALLOW
 # - box_pointers: box pointers are okay and useful
 # - variant_size_differences: no major impact under normal conditions
@@ -179,7 +180,7 @@ lint:
      -F clippy::todo\
      -F clippy::unimplemented\
      -D clippy::unreachable\
-     -F clippy::use_debug\
+     -D clippy::use_debug\
      -F clippy::wildcard_enum_match_arm\
      -F clippy::wrong_pub_self_convention
 

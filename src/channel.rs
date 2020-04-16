@@ -1,6 +1,7 @@
 //! [`Consumer`] and [`Producer`] implementations for different channel implementations.
 use {
     crate::{ClosedMarketError, Consumer, Producer},
+    core::fmt::Debug,
     fehler::{throw, throws},
     std::sync::mpsc,
 };
@@ -12,7 +13,10 @@ pub struct MpscConsumer<G> {
     rx: mpsc::Receiver<G>,
 }
 
-impl<G> Consumer for MpscConsumer<G> {
+impl<G> Consumer for MpscConsumer<G>
+where
+    G: Debug,
+{
     type Good = G;
     type Error = ClosedMarketError;
 
@@ -36,12 +40,18 @@ impl<G> From<mpsc::Receiver<G>> for MpscConsumer<G> {
 
 /// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
-pub struct CrossbeamConsumer<G> {
+pub struct CrossbeamConsumer<G>
+where
+    G: Debug,
+{
     /// The [`crossbeam_channel::Recevier`].
     rx: crossbeam_channel::Receiver<G>,
 }
 
-impl<G> Consumer for CrossbeamConsumer<G> {
+impl<G> Consumer for CrossbeamConsumer<G>
+where
+    G: Debug,
+{
     type Good = G;
     type Error = ClosedMarketError;
 
@@ -56,7 +66,10 @@ impl<G> Consumer for CrossbeamConsumer<G> {
     }
 }
 
-impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G> {
+impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G>
+where
+    G: Debug,
+{
     #[inline]
     fn from(value: crossbeam_channel::Receiver<G>) -> Self {
         Self { rx: value }

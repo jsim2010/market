@@ -4,7 +4,10 @@ use {
         channel::{CrossbeamConsumer, CrossbeamProducer},
         ComposeFrom, ComposingConsumer, Consumer, Producer, StripFrom, StrippingProducer,
     },
-    core::sync::atomic::{AtomicBool, Ordering},
+    core::{
+        fmt::Debug,
+        sync::atomic::{AtomicBool, Ordering},
+    },
     crossbeam_channel::TryRecvError,
     fehler::{throw, throws},
     log::error,
@@ -37,7 +40,7 @@ impl<G> Reader<G> {
 
 impl<G> Consumer for Reader<G>
 where
-    G: ComposeFrom<u8>,
+    G: ComposeFrom<u8> + Debug,
 {
     type Good = G;
     type Error = <ComposingConsumer<ByteConsumer, G> as Consumer>::Error;
