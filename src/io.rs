@@ -2,15 +2,16 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ComposeFrom, ComposingConsumer, Consumer, Producer, StripFrom, StrippingProducer,
+        ClosedMarketFailure, ComposeFrom, ComposingConsumer, ConsumeError, Consumer,
+        ProduceGoodError, Producer, StripFrom, StrippingProducer,
     },
     core::{
         fmt::Debug,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::TryRecvError,
-    fehler::{throw, throws},
-    log::error,
+    fehler::throws,
+    log::{error, warn},
     std::{
         io::{self, ErrorKind, Read, Write},
         sync::Arc,
@@ -43,11 +44,11 @@ where
     G: ComposeFrom<u8> + Debug,
 {
     type Good = G;
-    type Error = <ComposingConsumer<ByteConsumer, G> as Consumer>::Error;
+    type Failure = <ComposingConsumer<ByteConsumer, G> as Consumer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
 }
@@ -77,24 +78,22 @@ where
     u8: StripFrom<G>,
 {
     type Good = G;
-    type Error = <StrippingProducer<G, ByteProducer> as Producer>::Error;
+    type Failure = <StrippingProducer<G, ByteProducer> as Producer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
 }
 
 /// Consumes bytes using an item that implements [`Read`].
 ///
-/// Reading is done within a separate thread to ensure consume() is non-blocking.
+/// Reading is done in a separate thread to ensure consume() is non-blocking.
 #[derive(Debug)]
 pub struct ByteConsumer {
     /// Consumes bytes from the reading thread.
     consumer: CrossbeamConsumer<u8>,
-    /// Consumes errors from the reading thread.
-    error_consumer: CrossbeamConsumer<io::Error>,
     /// The handle to join the thread that processes writes.
     join_handle: Option<JoinHandle<()>>,
     /// If the thread is quitting.
@@ -106,7 +105,6 @@ impl ByteConsumer {
     #[inline]
     fn new<R: Read + Send + 'static>(mut reader: R) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let (err_tx, err_rx) = crossbeam_channel::bounded(1);
         let is_quitting = Arc::new(AtomicBool::new(false));
         let quitting = Arc::clone(&is_quitting);
 
@@ -120,29 +118,15 @@ impl ByteConsumer {
 
                         for byte in bytes {
                             if tx.send(*byte).is_err() {
-                                if let Err(send_error) = err_tx.send(io::Error::new(
-                                    ErrorKind::Other,
-                                    "failed to send read bytes",
-                                )) {
-                                    error!(
-                                        "Unable to store `ByteConsumer` send error: {}",
-                                        send_error.into_inner()
-                                    );
-                                }
-
+                                error!(
+                                    "Quitting `ByteConsumer` thread due to channel disconnection."
+                                );
                                 break;
                             }
                         }
                     }
                     Err(error) => {
-                        if let Err(send_error) = err_tx.send(error) {
-                            error!(
-                                "Unable to store `ByteConsumer` read error: {}",
-                                send_error.into_inner()
-                            );
-                        }
-
-                        break;
+                        warn!("`ByteConsumer` failed to read bytes: {}", error);
                     }
                 }
             }
@@ -150,7 +134,6 @@ impl ByteConsumer {
 
         Self {
             consumer: rx.into(),
-            error_consumer: err_rx.into(),
             join_handle: Some(join_handle),
             is_quitting,
         }
@@ -159,19 +142,12 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Error = io::Error;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        // consumer.consume() errs when the thread ends due to either read() or send() error.
-        self.consumer.consume().or_else(|_| {
-            Err(if let Ok(Some(error)) = self.error_consumer.consume() {
-                error
-            } else {
-                io::Error::new(ErrorKind::Other, "failed to retrieve error")
-            })
-        })?
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        self.consumer.consume()?
     }
 }
 
@@ -284,17 +260,11 @@ impl Drop for ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Error = io::Error;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
-        if let Ok(Some(error)) = self.error_consumer.consume() {
-            throw!(error);
-        } else {
-            self.producer
-                .produce(good)
-                .map_err(|_| io::Error::new(ErrorKind::Other, "failed to send bytes"))?
-        }
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
+        self.producer.produce(good)?
     }
 }

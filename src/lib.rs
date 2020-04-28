@@ -1,6 +1,8 @@
 //! A library to standardize the traits of producing and consuming.
 //!
-//! The core purpose of this library is to define the traits of items that interact with markets. A market stores goods in its stock. Producers add goods to the stock while consumers remove goods from the stock. One important characteristic of producers and consumers is that they are not modified by their respective action (producing or consuming). In other words, the signature of the action function starts with `fn action(&self`, not `fn action(&mut self`.
+//! The core purpose of this library is to define the traits of items that interact with markets. A market stores goods in its stock. Producers add goods to the stock while consumers remove goods from the stock.
+//!
+//! One important characteristic of producers and consumers is that they are not modified by their respective action (producing or consuming). In other words, the signature of the action function starts with `fn action(&self`, not `fn action(&mut self`.
 
 pub mod channel;
 pub mod io;
@@ -14,141 +16,193 @@ use {
     },
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
-    std::{error::Error, sync::Mutex},
+    std::sync::mpsc,
     thiserror::Error as ThisError,
 };
 
 /// Consumes goods from the stock of a market.
 ///
-/// The order in which goods are consumed is defined by the implementation of the [`Consumer`].
+/// The order in which goods are consumed is defined by the implementer.
 pub trait Consumer {
     /// The type of the item being consumed.
     type Good;
-    /// The type of the error when `Self` has failed while consuming.
-    ///
-    /// The failure of `Self` can be caused by any of the following:
-    ///
-    /// 1. `Self` is in an invalid state
-    /// 2. the market has no goods in stock and no functional producers
-    type Error;
+    /// The type of the failure that could be thrown during consumption.
+    type Failure;
 
     /// Attempts to consume the next good from the market without blocking.
-    ///
-    /// Returns `Ok(None)` to indicate the stock is empty.
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good>;
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good;
 
     /// Consumes the next good from the market, blocking until a good is available.
     #[inline]
-    #[throws(Self::Error)]
+    #[throws(Self::Failure)]
     fn demand(&self) -> Self::Good {
         let good;
 
         loop {
-            if let Some(g) = self.consume()? {
-                good = g;
-                break;
+            match self.consume() {
+                Ok(consumed_good) => {
+                    good = consumed_good;
+                    break;
+                }
+                Err(error) => {
+                    if let ConsumeError::Failure(failure) = error {
+                        throw!(failure);
+                    }
+                }
             }
         }
 
         good
     }
 
-    /// Creates a [`Consumer`] that calls `map` or `err_map` on each consume attempt.
+    /// Creates a [`Consumer`] that calls the appropriate map function on each consume.
     #[inline]
-    fn map<M, F>(self, map: M, err_map: F) -> MappedConsumer<Self, M, F>
+    fn map<M, F>(self, map: M, map_failure: F) -> MappedConsumer<Self, M, F>
     where
         Self: Sized,
     {
         MappedConsumer {
             consumer: self,
             map,
-            err_map,
+            map_failure,
         }
     }
 }
 
 /// Produces goods to be stored in the stock of a market.
 ///
-/// The decision tree to determine if it is desirable that a given good should be added to the market is defined by the implementation.
+/// Only goods which are desirable will be added to the market. The determination if a good is desirable is defined by the implementer.
+#[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for `fn produce()`; see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The type of the item being produced.
     type Good;
-    /// The type of the error when `Self` has failed while producing.
-    ///
-    /// The failure of `Self` can be caused by any of the following:
-    ///
-    /// 1. `Self` is in an invalid state
-    /// 2. the market has no functional consumers
-    type Error;
+    /// The type of the failure that could be thrown during production.
+    type Failure;
 
     /// Attempts to produce `good` to the market without blocking.
     ///
-    /// Returns `Some(good)` if `self` desired to add it to its stock but the stock was full. Otherwise returns `None`.
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good>;
-
-    /// Attempts `num_retries` + 1 times to produce `good to the market without blocking.
-    ///
-    /// Returns an error if `good` was not added for any reason.
-    #[inline]
-    #[throws(OneShotError<Self::Error>)]
-    fn attempt(&self, mut good: Self::Good, mut num_retries: u64)
-    where
-        Self::Error: Error,
-    {
-        while num_retries > 0 {
-            if let Some(failed_good) = self.produce(good)? {
-                num_retries = num_retries.saturating_sub(1);
-                good = failed_good;
-            } else {
-                return;
-            }
-        }
-
-        if self.produce(good)?.is_some() {
-            throw!(OneShotError::Full);
-        }
-    }
-
-    /// Attempts to produce each good in `goods` to the market without blocking.
-    ///
-    /// Returns the goods that `self` desired to add to the stock but the stock was full. Once the stock is found to be full, `self` no longer attempts to add a good.
-    #[inline]
-    #[throws(Self::Error)]
-    fn produce_all(&self, goods: Vec<Self::Good>) -> Vec<Self::Good> {
-        let mut failed_goods = Vec::new();
-
-        for good in goods {
-            if failed_goods.is_empty() {
-                if let Some(new_good) = self.produce(good)? {
-                    failed_goods.push(new_good);
-                }
-            } else {
-                failed_goods.push(good);
-            }
-        }
-
-        failed_goods
-    }
+    /// An error is thrown if and only if `good` was desirable but was not stored.
+    #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good);
 
     /// Produces `good` to the market, blocking if needed.
+    ///
+    /// An error is thrown if and only if `good` was desirable but was not stored.
     #[inline]
-    #[throws(Self::Error)]
-    fn force(&self, mut good: Self::Good) {
-        while let Some(failed_good) = self.produce(good)? {
-            good = failed_good;
+    #[throws(ForceGoodError<Self::Good, Self::Failure>)]
+    fn force(&self, good: Self::Good) {
+        let mut force_good = good;
+
+        loop {
+            match self.produce(force_good) {
+                Ok(()) => break,
+                Err(ProduceGoodError { good, error }) => match error {
+                    ProduceError::FullStock => {
+                        force_good = good;
+                    }
+                    ProduceError::Failure(failure) => throw!(ForceGoodError { good, failure }),
+                },
+            }
         }
+    }
+}
+
+/// A failure while consuming a good due to the market being closed.
+#[derive(Clone, Copy, Debug, ThisError)]
+#[error("market is closed")]
+pub struct ClosedMarketFailure;
+
+/// Describes why a good was not consumed.
+#[derive(Debug)]
+pub enum ConsumeError<F> {
+    /// The stock of the market is empty.
+    EmptyStock,
+    /// A failure to consume a good.
+    ///
+    /// Indicates the [`Consumer`] will not consume any more goods in the current state.
+    Failure(F),
+}
+
+// TODO: Have to impl here due to ConsumeError being declared here. Would make more sense in channel.
+impl From<mpsc::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: mpsc::TryRecvError) -> Self {
+        match value {
+            mpsc::TryRecvError::Empty => Self::EmptyStock,
+            mpsc::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+        }
+    }
+}
+
+// TODO: Have to impl here due to ConsumeError being declared here. Would make more sense in channel.
+impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: crossbeam_channel::TryRecvError) -> Self {
+        match value {
+            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
+            crossbeam_channel::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+        }
+    }
+}
+
+/// An error thrown while producing a good.
+#[derive(Debug)]
+pub struct ProduceGoodError<G, F> {
+    /// The good that was not produced.
+    good: G,
+    /// The error.
+    error: ProduceError<F>,
+}
+
+// TODO: Have to impl here due to ProduceGoodError being declared here. Would make more sense in channel.
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceGoodError<G, ClosedMarketFailure> {
+    #[inline]
+    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
+        match value {
+            crossbeam_channel::TrySendError::Full(good) => Self {
+                good,
+                error: ProduceError::FullStock,
+            },
+            crossbeam_channel::TrySendError::Disconnected(good) => Self {
+                good,
+                error: ProduceError::Failure(ClosedMarketFailure),
+            },
+        }
+    }
+}
+
+/// An error thrown while forcing a good.
+#[derive(Debug)]
+pub struct ForceGoodError<G, F> {
+    /// The good that was not produced.
+    good: G,
+    /// The failure.
+    failure: F,
+}
+
+impl<G, F> ForceGoodError<G, F> {
+    /// Returns a pointer to the good that was not produced when `self` was thrown.
+    #[inline]
+    pub const fn good(&self) -> &G {
+        &self.good
     }
 
-    /// Produces each good in `goods` to the market, blocking if needed.
+    /// Returns a pointer to the failure that caused `self` to be thrown.
     #[inline]
-    #[throws(Self::Error)]
-    fn force_all(&self, goods: Vec<Self::Good>) {
-        for good in goods {
-            self.force(good)?;
-        }
+    pub const fn failure(&self) -> &F {
+        &self.failure
     }
+}
+
+/// An error thrown while producing.
+#[derive(Debug)]
+pub enum ProduceError<F> {
+    /// An error to produce due to the stock of the market not having any room.
+    FullStock,
+    /// An error to produce due to an invalid state.
+    Failure(F),
 }
 
 /// A [`Consumer`] that maps the consumed good to a new good.
@@ -157,26 +211,31 @@ pub struct MappedConsumer<C, M, F> {
     consumer: C,
     /// The [`Fn`] to map from `C::Good` to `Self::Good`.
     map: M,
-    /// The [`Fn`] to map from `C::Error` to `Self::Error`.
-    err_map: F,
+    /// The [`Fn`] to map from `C::Failure` to `Self::Failure`.
+    map_failure: F,
 }
 
 impl<G, E, C, M, F> Consumer for MappedConsumer<C, M, F>
 where
     C: Consumer,
     M: Fn(C::Good) -> G,
-    F: Fn(C::Error) -> E,
+    F: Fn(C::Failure) -> E,
 {
     type Good = G;
-    type Error = E;
+    type Failure = E;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         self.consumer
             .consume()
-            .map_err(|error| (self.err_map)(error))?
-            .map(|good| (self.map)(good))
+            .map_err(|error| match error {
+                ConsumeError::EmptyStock => ConsumeError::EmptyStock,
+                ConsumeError::Failure(failure) => {
+                    ConsumeError::Failure((self.map_failure)(failure))
+                }
+            })
+            .map(|good| (self.map)(good))?
     }
 }
 
@@ -184,7 +243,6 @@ impl<C, M, F> Debug for MappedConsumer<C, M, F>
 where
     C: Debug,
 {
-    #[allow(clippy::use_debug)] // Okay to use debug in Debug impl.
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "MappedConsumer {{ consumer: {:?} }}", self.consumer)
@@ -195,7 +253,7 @@ where
 #[derive(Default)]
 pub struct Collector<G, E> {
     /// The [`Consumer`]s.
-    consumers: Vec<Box<dyn Consumer<Good = G, Error = E>>>,
+    consumers: Vec<Box<dyn Consumer<Good = G, Failure = E>>>,
 }
 
 impl<G, E> Collector<G, E> {
@@ -214,7 +272,7 @@ impl<G, E> Collector<G, E> {
     where
         C: Consumer + 'static,
         G: From<C::Good> + 'static,
-        E: From<C::Error> + 'static,
+        E: From<C::Failure> + 'static,
     {
         self.push(consumer.map(G::from, E::from));
     }
@@ -223,7 +281,7 @@ impl<G, E> Collector<G, E> {
     #[inline]
     pub fn push<C>(&mut self, consumer: C)
     where
-        C: Consumer<Good = G, Error = E> + 'static,
+        C: Consumer<Good = G, Failure = E> + 'static,
     {
         self.consumers.push(Box::new(consumer));
     }
@@ -231,22 +289,26 @@ impl<G, E> Collector<G, E> {
 
 impl<G, E> Consumer for Collector<G, E> {
     type Good = G;
-    type Error = E;
+    type Failure = E;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        let mut good = None;
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        let mut result = Err(ConsumeError::EmptyStock);
 
         for consumer in &self.consumers {
-            good = consumer.consume()?;
+            result = match consumer.consume() {
+                Ok(good) => Ok(good),
+                Err(error) => match error {
+                    ConsumeError::EmptyStock => continue,
+                    ConsumeError::Failure(_) => Err(error),
+                },
+            };
 
-            if good.is_some() {
-                break;
-            }
+            break;
         }
 
-        good
+        result?
     }
 }
 
@@ -266,34 +328,6 @@ where
     fn strip_from(good: &G) -> Vec<Self>;
 }
 
-/// An error when a [`Producer`] is trying to produce in a single shot.
-#[derive(Debug, ThisError)]
-pub enum OneShotError<E>
-where
-    E: Error + 'static,
-{
-    /// The [`Producer`] is invalid.
-    #[error(transparent)]
-    Error(#[from] E),
-    /// The stock was full.
-    #[error("stock was full")]
-    Full,
-}
-
-/// An error producing parts.
-#[derive(Debug, ThisError)]
-pub enum StripError<T>
-where
-    T: Debug,
-{
-    /// An error locking the mutex.
-    #[error("")]
-    Lock,
-    /// An error producing the part.
-    #[error("")]
-    Error(T),
-}
-
 /// A [`Producer`] of type `P` that produces parts stripped from goods of type `G`.
 #[derive(Debug)]
 pub struct StrippingProducer<G, P>
@@ -306,7 +340,7 @@ where
     /// The producer of parts.
     producer: P,
     /// Parts stripped from a composite good yet to be produced.
-    parts: Mutex<Vec<<P as Producer>::Good>>,
+    parts: RefCell<Vec<<P as Producer>::Good>>,
 }
 
 impl<G, P> StrippingProducer<G, P>
@@ -320,7 +354,7 @@ where
         Self {
             producer,
             phantom: PhantomData,
-            parts: Mutex::new(Vec::new()),
+            parts: RefCell::new(Vec::new()),
         }
     }
 }
@@ -329,28 +363,21 @@ impl<G, P> Producer for StrippingProducer<G, P>
 where
     P: Producer,
     <P as Producer>::Good: StripFrom<G> + Clone + Debug,
-    <P as Producer>::Error: Debug,
+    <P as Producer>::Failure: Debug,
 {
     type Good = G;
-    type Error = StripError<<P as Producer>::Error>;
+    type Failure = <P as Producer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
-        let mut parts = self.parts.lock().map_err(|_| Self::Error::Lock)?;
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
+        let parts = <<P as Producer>::Good>::strip_from(&good);
 
-        if parts.is_empty() {
-            *parts = <<P as Producer>::Good>::strip_from(&good);
-        }
-
-        *parts = self
-            .producer
-            .produce_all(parts.to_vec())
-            .map_err(Self::Error::Error)?;
-        if parts.is_empty() {
-            None
-        } else {
-            Some(good)
+        for part in parts {
+            match self.producer.produce(part) {
+                Ok(()) => {}
+                Err(ProduceGoodError { error, .. }) => throw!(ProduceGoodError { good, error }),
+            }
         }
     }
 }
@@ -379,13 +406,26 @@ where
     }
 
     /// Consumes all stocked composite goods and strips them into parts.
-    #[throws(<C as Consumer>::Error)]
-    fn strip(&self) {
-        while let Some(composite) = self.consumer.consume()? {
-            for part in P::strip_from(&composite) {
-                self.parts.push(part);
+    ///
+    /// Runs until a [`ConsumerError`] is thrown.
+    fn strip(&self) -> ConsumeError<<C as Consumer>::Failure> {
+        let error;
+
+        loop {
+            match self.consumer.consume() {
+                Ok(composite) => {
+                    for part in P::strip_from(&composite) {
+                        self.parts.push(part);
+                    }
+                }
+                Err(e) => {
+                    error = e;
+                    break;
+                }
             }
         }
+
+        error
     }
 }
 
@@ -395,21 +435,30 @@ where
     P: StripFrom<<C as Consumer>::Good> + Debug,
 {
     type Good = P;
-    type Error = <C as Consumer>::Error;
+    type Failure = <C as Consumer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         // Store result of strip because all stocked parts should be consumed prior to failing.
-        let strip_result = self.strip();
+        let error = self.strip();
 
         if let Ok(part) = self.parts.pop() {
-            Some(part)
-        } else if let Err(error) = strip_result {
-            throw!(error);
+            part
         } else {
-            None
+            throw!(error);
         }
+    }
+}
+
+/// The Error thrown when failing to compose parts into a composite good.
+#[derive(Copy, Clone, Debug)]
+pub struct NonComposible;
+
+impl<T> From<NonComposible> for ConsumeError<T> {
+    #[inline]
+    fn from(_: NonComposible) -> Self {
+        Self::EmptyStock
     }
 }
 
@@ -418,8 +467,9 @@ pub trait ComposeFrom<G>
 where
     Self: Sized,
 {
+    #[throws(NonComposible)]
     /// Converts `parts` into a composite good.
-    fn compose_from(parts: &mut Vec<G>) -> Option<Self>;
+    fn compose_from(parts: &mut Vec<G>) -> Self;
 }
 
 /// Consumes composite goods of type `G` from a parts [`Consumer`] of type `C`.
@@ -460,16 +510,15 @@ where
     <C as Consumer>::Good: Debug,
 {
     type Good = G;
-    type Error = <C as Consumer>::Error;
+    type Failure = <C as Consumer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        self.consumer.consume()?.and_then(|good| {
-            let mut buffer = self.buffer.borrow_mut();
-            buffer.push(good);
-            G::compose_from(&mut buffer)
-        })
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        let good = self.consumer.consume()?;
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.push(good);
+        G::compose_from(&mut buffer)?
     }
 }
 
@@ -508,18 +557,22 @@ where
     I: Inspector<Good = <C as Consumer>::Good> + Debug,
 {
     type Good = <C as Consumer>::Good;
-    type Error = <C as Consumer>::Error;
+    type Failure = <C as Consumer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        while let Some(input) = self.consumer.consume()? {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        let mut input;
+
+        loop {
+            input = self.consumer.consume()?;
+
             if self.inspector.allows(&input) {
-                return Some(input);
+                break;
             }
         }
 
-        None
+        input
     }
 }
 
@@ -549,15 +602,13 @@ where
     I: Inspector<Good = <P as Producer>::Good>,
 {
     type Good = <P as Producer>::Good;
-    type Error = <P as Producer>::Error;
+    type Failure = <P as Producer>::Failure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         if self.inspector.allows(&good) {
             self.producer.produce(good)?
-        } else {
-            None
         }
     }
 }
@@ -565,11 +616,6 @@ where
 /// An error that will never occur, equivalent to `!`.
 #[derive(Copy, Clone, Debug, ThisError)]
 pub enum NeverErr {}
-
-/// An error consuming a good from a closable market.
-#[derive(Clone, Copy, Debug, ThisError)]
-#[error("market is closed")]
-pub struct ClosedMarketError;
 
 /// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
 ///
@@ -602,18 +648,18 @@ where
     G: Debug,
 {
     type Good = G;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
         match self.queue.pop() {
-            Ok(good) => Some(good),
+            Ok(good) => good,
             Err(_) => {
                 if self.is_closed.load(Ordering::Relaxed) {
-                    throw!(ClosedMarketError);
+                    throw!(ConsumeError::Failure(ClosedMarketFailure));
                 } else {
-                    None
+                    throw!(ConsumeError::EmptyStock);
                 }
             }
         }
@@ -632,16 +678,18 @@ impl<G> Default for UnlimitedQueue<G> {
 
 impl<G> Producer for UnlimitedQueue<G> {
     type Good = G;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         if self.is_closed.load(Ordering::Relaxed) {
-            throw!(ClosedMarketError);
+            throw!(ProduceGoodError {
+                good,
+                error: ProduceError::Failure(ClosedMarketFailure)
+            });
         } else {
             self.queue.push(good);
-            None
         }
     }
 }
@@ -669,23 +717,22 @@ where
     G: Debug,
 {
     type Good = G;
-    type Error = NeverErr;
+    type Failure = NeverErr;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        self.queue.pop().ok()
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        self.queue.pop().map_err(|_| ConsumeError::EmptyStock)?
     }
 }
 
 impl<G> Producer for PermanentQueue<G> {
     type Good = G;
-    type Error = NeverErr;
+    type Failure = NeverErr;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
         self.queue.push(good);
-        None
     }
 }

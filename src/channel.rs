@@ -1,37 +1,33 @@
 //! [`Consumer`] and [`Producer`] implementations for different channel implementations.
 use {
-    crate::{ClosedMarketError, Consumer, Producer},
+    crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceGoodError, Producer},
     core::fmt::Debug,
-    fehler::{throw, throws},
+    fehler::throws,
     std::sync::mpsc,
 };
 
 /// A [`mpsc::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
-pub struct MpscConsumer<G> {
+pub struct StdConsumer<G> {
     /// The receiver.
     rx: mpsc::Receiver<G>,
 }
 
-impl<G> Consumer for MpscConsumer<G>
+impl<G> Consumer for StdConsumer<G>
 where
     G: Debug,
 {
     type Good = G;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        match self.rx.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => throw!(ClosedMarketError),
-            Ok(good) => Some(good),
-        }
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        self.rx.try_recv()?
     }
 }
 
-impl<G> From<mpsc::Receiver<G>> for MpscConsumer<G> {
+impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
     #[inline]
     fn from(value: mpsc::Receiver<G>) -> Self {
         Self { rx: value }
@@ -53,16 +49,12 @@ where
     G: Debug,
 {
     type Good = G;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn consume(&self) -> Option<Self::Good> {
-        match self.rx.try_recv() {
-            Err(crossbeam_channel::TryRecvError::Empty) => None,
-            Err(crossbeam_channel::TryRecvError::Disconnected) => throw!(ClosedMarketError),
-            Ok(good) => Some(good),
-        }
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        self.rx.try_recv()?
     }
 }
 
@@ -85,16 +77,12 @@ pub struct CrossbeamProducer<G> {
 
 impl<G> Producer for CrossbeamProducer<G> {
     type Good = G;
-    type Error = ClosedMarketError;
+    type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(Self::Error)]
-    fn produce(&self, good: Self::Good) -> Option<Self::Good> {
-        match self.tx.try_send(good) {
-            Err(crossbeam_channel::TrySendError::Full(g)) => Some(g),
-            Err(crossbeam_channel::TrySendError::Disconnected(..)) => throw!(ClosedMarketError),
-            Ok(()) => None,
-        }
+    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    fn produce(&self, good: Self::Good) {
+        self.tx.try_send(good)?
     }
 }
 
