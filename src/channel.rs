@@ -1,6 +1,6 @@
 //! [`Consumer`] and [`Producer`] implementations for different channel implementations.
 use {
-    crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceGoodError, Producer},
+    crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer},
     core::fmt::{Debug, Display},
     fehler::throws,
     std::sync::mpsc,
@@ -83,7 +83,7 @@ where
     type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         self.tx.try_send(good)?
     }

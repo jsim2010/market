@@ -84,25 +84,38 @@ pub trait Producer {
     ///
     /// An error is thrown if and only if `good` was desirable but was not stored.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good);
+
+    /// Attempts to produce `good` without blocking and returns the good on failure.
+    #[throws(RecallGood<Self::Good, ProduceError<Self::Failure>>)]
+    fn produce_or_recall(&self, good: Self::Good)
+    where
+        Self::Good: Clone,
+    {
+        self.produce(good.clone())
+            .map_err(|error| RecallGood { good, error })?
+    }
 
     /// Produces `good` to the market, blocking if needed.
     ///
     /// An error is thrown if and only if `good` was desirable but was not stored.
     #[inline]
-    #[throws(ForceGoodError<Self::Good, Self::Failure>)]
-    fn force(&self, good: Self::Good) {
+    #[throws(Self::Failure)]
+    fn force(&self, good: Self::Good)
+    where
+        Self::Good: Clone,
+    {
         let mut force_good = good;
 
         loop {
-            match self.produce(force_good) {
+            match self.produce_or_recall(force_good) {
                 Ok(()) => break,
-                Err(ProduceGoodError { good, error }) => match error {
+                Err(RecallGood { good, error }) => match error {
                     ProduceError::FullStock => {
                         force_good = good;
                     }
-                    ProduceError::Failure(failure) => throw!(ForceGoodError { good, failure }),
+                    ProduceError::Failure(failure) => throw!(failure),
                 },
             }
         }
@@ -150,7 +163,7 @@ impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure>
 /// An error thrown while producing a good.
 #[derive(Debug, ThisError)]
 #[error("unable to produce good `{good}`: {error}")]
-pub struct ProduceGoodError<G, F>
+pub struct RecallGood<G, F>
 where
     G: Debug + Display,
     F: Error,
@@ -158,49 +171,28 @@ where
     /// The good that was not produced.
     good: G,
     /// The error.
-    error: ProduceError<F>,
+    error: F,
 }
 
-impl<G, F> ProduceGoodError<G, F>
+impl<G, F> RecallGood<G, F>
 where
     G: Debug + Display,
     F: Error,
 {
-    /// Creates a new [`ProduceGoodError`] caused by a full stock with `good`.
+    /// Creates a new [`RecallGood`].
     #[inline]
-    pub fn full(good: G) -> Self {
-        Self {
-            good,
-            error: ProduceError::FullStock,
-        }
-    }
-
-    /// Creates a new [`ProduceGoodError`] with `good` and `failure`.
-    #[inline]
-    pub fn failure(good: G, failure: F) -> Self {
-        Self {
-            good,
-            error: ProduceError::Failure(failure),
-        }
+    pub fn new(good: G, error: F) -> Self {
+        Self { good, error }
     }
 }
 
-// TODO: Have to impl here due to ProduceGoodError being declared here. Would make more sense in channel.
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceGoodError<G, ClosedMarketFailure>
-where
-    G: Debug + Display,
-{
+// TODO: Have to impl here due to RecallGood being declared here. Would make more sense in channel.
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
     #[inline]
     fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
         match value {
-            crossbeam_channel::TrySendError::Full(good) => Self {
-                good,
-                error: ProduceError::FullStock,
-            },
-            crossbeam_channel::TrySendError::Disconnected(good) => Self {
-                good,
-                error: ProduceError::Failure(ClosedMarketFailure),
-            },
+            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
         }
     }
 }
@@ -404,14 +396,13 @@ where
     type Failure = <P as Producer>::Failure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         let parts = <<P as Producer>::Good>::strip_from(&good);
 
         for part in parts {
-            match self.producer.produce(part) {
-                Ok(()) => {}
-                Err(ProduceGoodError { error, .. }) => throw!(ProduceGoodError { good, error }),
+            if let Err(error) = self.producer.produce(part) {
+                throw!(error);
             }
         }
     }
@@ -642,7 +633,7 @@ where
     type Failure = <P as Producer>::Failure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         if self.inspector.allows(&good) {
             self.producer.produce(good)?
@@ -721,13 +712,10 @@ where
     type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         if self.is_closed.load(Ordering::Relaxed) {
-            throw!(ProduceGoodError {
-                good,
-                error: ProduceError::Failure(ClosedMarketFailure)
-            });
+            throw!(ProduceError::Failure(ClosedMarketFailure));
         } else {
             self.queue.push(good);
         }
@@ -774,7 +762,7 @@ where
     type Failure = NeverErr;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         self.queue.push(good);
     }

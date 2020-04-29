@@ -2,8 +2,8 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ClosedMarketFailure, ComposeFrom, ComposingConsumer, ConsumeError, Consumer,
-        ProduceGoodError, Producer, StripFrom, StrippingProducer,
+        ClosedMarketFailure, ComposeFrom, ComposingConsumer, ConsumeError, Consumer, ProduceError,
+        Producer, StripFrom, StrippingProducer,
     },
     core::{
         fmt::{Debug, Display},
@@ -82,7 +82,7 @@ where
     type Failure = <StrippingProducer<G, ByteProducer> as Producer>::Failure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
@@ -264,7 +264,7 @@ impl Producer for ByteProducer {
     type Failure = ClosedMarketFailure;
 
     #[inline]
-    #[throws(ProduceGoodError<Self::Good, Self::Failure>)]
+    #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
