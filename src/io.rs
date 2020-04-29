@@ -6,7 +6,7 @@ use {
         ProduceGoodError, Producer, StripFrom, StrippingProducer,
     },
     core::{
-        fmt::Debug,
+        fmt::{Debug, Display},
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::TryRecvError,
@@ -76,6 +76,7 @@ impl<G> Writer<G> {
 impl<G> Producer for Writer<G>
 where
     u8: StripFrom<G>,
+    G: Debug + Display,
 {
     type Good = G;
     type Failure = <StrippingProducer<G, ByteProducer> as Producer>::Failure;

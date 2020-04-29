@@ -1,7 +1,7 @@
 //! [`Consumer`] and [`Producer`] implementations for different channel implementations.
 use {
     crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceGoodError, Producer},
-    core::fmt::Debug,
+    core::fmt::{Debug, Display},
     fehler::throws,
     std::sync::mpsc,
 };
@@ -75,7 +75,10 @@ pub struct CrossbeamProducer<G> {
     tx: crossbeam_channel::Sender<G>,
 }
 
-impl<G> Producer for CrossbeamProducer<G> {
+impl<G> Producer for CrossbeamProducer<G>
+where
+    G: Debug + Display,
+{
     type Good = G;
     type Failure = ClosedMarketFailure;
 

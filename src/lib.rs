@@ -10,13 +10,13 @@ pub mod io;
 use {
     core::{
         cell::RefCell,
-        fmt::{self, Debug},
+        fmt::{self, Debug, Display},
         marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
-    std::sync::mpsc,
+    std::{error::Error, sync::mpsc},
     thiserror::Error as ThisError,
 };
 
@@ -76,9 +76,9 @@ pub trait Consumer {
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for `fn produce()`; see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The type of the item being produced.
-    type Good;
+    type Good: Debug + Display;
     /// The type of the failure that could be thrown during production.
-    type Failure;
+    type Failure: Error;
 
     /// Attempts to produce `good` to the market without blocking.
     ///
@@ -148,16 +148,48 @@ impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure>
 }
 
 /// An error thrown while producing a good.
-#[derive(Debug)]
-pub struct ProduceGoodError<G, F> {
+#[derive(Debug, ThisError)]
+#[error("unable to produce good `{good}`: {error}")]
+pub struct ProduceGoodError<G, F>
+where
+    G: Debug + Display,
+    F: Error,
+{
     /// The good that was not produced.
     good: G,
     /// The error.
     error: ProduceError<F>,
 }
 
+impl<G, F> ProduceGoodError<G, F>
+where
+    G: Debug + Display,
+    F: Error,
+{
+    /// Creates a new [`ProduceGoodError`] caused by a full stock with `good`.
+    #[inline]
+    pub fn full(good: G) -> Self {
+        Self {
+            good,
+            error: ProduceError::FullStock,
+        }
+    }
+
+    /// Creates a new [`ProduceGoodError`] with `good` and `failure`.
+    #[inline]
+    pub fn failure(good: G, failure: F) -> Self {
+        Self {
+            good,
+            error: ProduceError::Failure(failure),
+        }
+    }
+}
+
 // TODO: Have to impl here due to ProduceGoodError being declared here. Would make more sense in channel.
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceGoodError<G, ClosedMarketFailure> {
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceGoodError<G, ClosedMarketFailure>
+where
+    G: Debug + Display,
+{
     #[inline]
     fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
         match value {
@@ -197,11 +229,13 @@ impl<G, F> ForceGoodError<G, F> {
 }
 
 /// An error thrown while producing.
-#[derive(Debug)]
-pub enum ProduceError<F> {
+#[derive(Debug, ThisError)]
+pub enum ProduceError<F: Error> {
     /// An error to produce due to the stock of the market not having any room.
+    #[error("stock is full")]
     FullStock,
     /// An error to produce due to an invalid state.
+    #[error("failure: {0}")]
     Failure(F),
 }
 
@@ -362,8 +396,9 @@ where
 impl<G, P> Producer for StrippingProducer<G, P>
 where
     P: Producer,
+    G: Debug + Display,
     <P as Producer>::Good: StripFrom<G> + Clone + Debug,
-    <P as Producer>::Failure: Debug,
+    <P as Producer>::Failure: Error,
 {
     type Good = G;
     type Failure = <P as Producer>::Failure;
@@ -599,6 +634,8 @@ impl<P, I> ApprovedProducer<P, I> {
 impl<P, I> Producer for ApprovedProducer<P, I>
 where
     P: Producer,
+    <P as Producer>::Good: Debug + Display,
+    <P as Producer>::Failure: Error,
     I: Inspector<Good = <P as Producer>::Good>,
 {
     type Good = <P as Producer>::Good;
@@ -676,7 +713,10 @@ impl<G> Default for UnlimitedQueue<G> {
     }
 }
 
-impl<G> Producer for UnlimitedQueue<G> {
+impl<G> Producer for UnlimitedQueue<G>
+where
+    G: Debug + Display,
+{
     type Good = G;
     type Failure = ClosedMarketFailure;
 
@@ -726,7 +766,10 @@ where
     }
 }
 
-impl<G> Producer for PermanentQueue<G> {
+impl<G> Producer for PermanentQueue<G>
+where
+    G: Debug + Display,
+{
     type Good = G;
     type Failure = NeverErr;
 
