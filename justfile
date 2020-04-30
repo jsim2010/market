@@ -53,6 +53,7 @@ fix_format: _install_format
 # - clippy::indexing_slicing: required by EnumMap
 # - clippy::missing_inline_in_public_items: current issue with fehler
 # - clippy::unreachable: required by Enum
+# - clippy::use_self: false positive for Item<A> when Self is Item<B>
 # ALLOW
 # - box_pointers: box pointers are okay and useful
 # - variant_size_differences: handled by clippy::large_enum_variant
@@ -119,6 +120,7 @@ lint: _install_lint
      -F clippy::perf\
      -F clippy::cargo\
      -F clippy::nursery\
+     -D clippy::use_self\
      -A clippy::empty_enum\
      -A clippy::multiple_crate_versions\
      -A clippy::implicit_return\

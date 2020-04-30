@@ -27,7 +27,7 @@ pub trait Consumer {
     /// The type of the item being consumed.
     type Good;
     /// The type of the failure that could be thrown during consumption.
-    type Failure;
+    type Failure: Error;
 
     /// Attempts to consume the next good from the market without blocking.
     #[throws(ConsumeError<Self::Failure>)]
@@ -120,6 +120,19 @@ pub trait Producer {
             }
         }
     }
+
+    /// Produces every good in `goods`, blocking if needed.
+    ///
+    /// An error is thrown if and only if a good was desirable but was not stored. All other goods after the failed good are not attempted.
+    #[throws(Self::Failure)]
+    fn force_all(&self, goods: Vec<Self::Good>)
+    where
+        Self::Good: Clone,
+    {
+        for good in goods {
+            self.force(good)?
+        }
+    }
 }
 
 /// A failure while consuming a good due to the market being closed.
@@ -128,13 +141,18 @@ pub trait Producer {
 pub struct ClosedMarketFailure;
 
 /// Describes why a good was not consumed.
-#[derive(Debug)]
-pub enum ConsumeError<F> {
+#[derive(Debug, ThisError)]
+pub enum ConsumeError<F>
+where
+    F: Error,
+{
     /// The stock of the market is empty.
+    #[error("stock is empty")]
     EmptyStock,
     /// A failure to consume a good.
     ///
     /// Indicates the [`Consumer`] will not consume any more goods in the current state.
+    #[error("failure: {0}")]
     Failure(F),
 }
 
@@ -156,6 +174,48 @@ impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure>
         match value {
             crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
             crossbeam_channel::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+        }
+    }
+}
+
+/// An error thrown while producing.
+#[derive(Debug, ThisError)]
+pub enum ProduceError<F: Error> {
+    /// An error to produce due to the stock of the market not having any room.
+    #[error("stock is full")]
+    FullStock,
+    /// An error to produce due to an invalid state.
+    #[error("failure: {0}")]
+    Failure(F),
+}
+
+#[allow(clippy::use_self)] // False positive for ProduceError<E>.
+impl<F> ProduceError<F>
+where
+    F: Error,
+{
+    /// Converts `ProduceError<F>` to `ProduceError<E>`
+    // TODO: This is a temporary fix until Rust allows implementing From<ProduceError<E>> for ProduceError<F>.
+    #[inline]
+    pub fn map<E, M>(self, map: M) -> ProduceError<E>
+    where
+        E: Error,
+        M: Fn(F) -> E,
+    {
+        match self {
+            Self::FullStock => ProduceError::FullStock,
+            Self::Failure(failure) => ProduceError::Failure((map)(failure)),
+        }
+    }
+}
+
+// TODO: Have to impl here due to ProduceError being declared here. Would make more sense in channel.
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
+        match value {
+            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
         }
     }
 }
@@ -186,17 +246,6 @@ where
     }
 }
 
-// TODO: Have to impl here due to RecallGood being declared here. Would make more sense in channel.
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
-    #[inline]
-    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
-        match value {
-            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
-        }
-    }
-}
-
 /// An error thrown while forcing a good.
 #[derive(Debug)]
 pub struct ForceGoodError<G, F> {
@@ -220,18 +269,8 @@ impl<G, F> ForceGoodError<G, F> {
     }
 }
 
-/// An error thrown while producing.
-#[derive(Debug, ThisError)]
-pub enum ProduceError<F: Error> {
-    /// An error to produce due to the stock of the market not having any room.
-    #[error("stock is full")]
-    FullStock,
-    /// An error to produce due to an invalid state.
-    #[error("failure: {0}")]
-    Failure(F),
-}
-
 /// A [`Consumer`] that maps the consumed good to a new good.
+#[derive(Debug)]
 pub struct MappedConsumer<C, M, F> {
     /// The original consumer.
     consumer: C,
@@ -246,6 +285,7 @@ where
     C: Consumer,
     M: Fn(C::Good) -> G,
     F: Fn(C::Failure) -> E,
+    E: Error,
 {
     type Good = G;
     type Failure = E;
@@ -262,16 +302,6 @@ where
                 }
             })
             .map(|good| (self.map)(good))?
-    }
-}
-
-impl<C, M, F> Debug for MappedConsumer<C, M, F>
-where
-    C: Debug,
-{
-    #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MappedConsumer {{ consumer: {:?} }}", self.consumer)
     }
 }
 
@@ -298,7 +328,7 @@ impl<G, E> Collector<G, E> {
     where
         C: Consumer + 'static,
         G: From<C::Good> + 'static,
-        E: From<C::Failure> + 'static,
+        E: From<C::Failure> + Error + 'static,
     {
         self.push(consumer.map(G::from, E::from));
     }
@@ -308,12 +338,16 @@ impl<G, E> Collector<G, E> {
     pub fn push<C>(&mut self, consumer: C)
     where
         C: Consumer<Good = G, Failure = E> + 'static,
+        E: Error,
     {
         self.consumers.push(Box::new(consumer));
     }
 }
 
-impl<G, E> Consumer for Collector<G, E> {
+impl<G, E> Consumer for Collector<G, E>
+where
+    E: Error,
+{
     type Good = G;
     type Failure = E;
 
@@ -481,7 +515,10 @@ where
 #[derive(Copy, Clone, Debug)]
 pub struct NonComposible;
 
-impl<T> From<NonComposible> for ConsumeError<T> {
+impl<T> From<NonComposible> for ConsumeError<T>
+where
+    T: Error,
+{
     #[inline]
     fn from(_: NonComposible) -> Self {
         Self::EmptyStock
@@ -626,7 +663,6 @@ impl<P, I> Producer for ApprovedProducer<P, I>
 where
     P: Producer,
     <P as Producer>::Good: Debug + Display,
-    <P as Producer>::Failure: Error,
     I: Inspector<Good = <P as Producer>::Good>,
 {
     type Good = <P as Producer>::Good;
