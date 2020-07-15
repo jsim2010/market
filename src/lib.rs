@@ -1,11 +1,12 @@
-//! A library to standardize the traits of producing and consuming.
+//! Standardizes traits for items that interact with markets.
 //!
 //! The core purpose of this library is to define the traits of items that interact with markets. A market stores goods in its stock. Producers add goods to the stock while consumers remove goods from the stock.
-//!
-//! One important characteristic of producers and consumers is that they are not modified by their respective action (producing or consuming). In other words, the signature of the action function starts with `fn action(&self`, not `fn action(&mut self`.
 
 pub mod channel;
+mod error;
 pub mod io;
+
+pub use error::{ClosedMarketFailure, ConsumeError, ProduceError, Recall};
 
 use {
     core::{
@@ -16,34 +17,37 @@ use {
     },
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
-    std::{error::Error, sync::mpsc},
-    thiserror::Error as ThisError,
+    never::Never,
+    std::error::Error,
 };
 
-/// Consumes goods from the stock of a market.
+/// Retrieves goods stored in a market.
 ///
-/// The order in which goods are consumed is defined by the implementer.
+/// The order in which goods are retrieved is defined by the implementer.
 pub trait Consumer {
     /// The type of the item being consumed.
     type Good;
-    /// The type of the failure that could be thrown during consumption.
+    /// The type of the error that could be thrown during consumption.
     type Failure: Error;
 
-    /// Attempts to consume the next good from the market without blocking.
+    /// Retrieves the next currently available good from the market without blocking.
+    ///
+    /// To ensure all functionality of the `Consumer` performs as specified, the implementor MUST implement `consume` such that all of the following specifications are true:
+    ///
+    /// 1. `consume` returns without blocking the current process.
+    /// 2. If no goods are currently available in the market, `consume` throws `ConsumeError<Self::Failure>::EmptyStock`.
+    /// 3. If `{F}` of type `Self::Failure` is thrown, `consume` throws `ConsumeError<Self::Failure>::Failure({F})`.
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good;
 
-    /// Consumes the next good from the market, blocking until a good is available.
+    /// Retrieves the next good from the market.
     #[inline]
     #[throws(Self::Failure)]
     fn demand(&self) -> Self::Good {
-        let good;
-
         loop {
             match self.consume() {
-                Ok(consumed_good) => {
-                    good = consumed_good;
-                    break;
+                Ok(good) => {
+                    break good;
                 }
                 Err(error) => {
                     if let ConsumeError::Failure(failure) = error {
@@ -52,71 +56,68 @@ pub trait Consumer {
                 }
             }
         }
-
-        good
     }
 
-    /// Creates a [`Consumer`] that calls the appropriate map function on each consume.
+    /// Creates an [`Adapter`] that converts each consumption of the [`Consumer`] to the appropriate `G` or `F`.
     #[inline]
-    fn map<M, F>(self, map: M, map_failure: F) -> MappedConsumer<Self, M, F>
+    fn adapt<G, F>(self) -> Adapter<Self, G, F>
     where
         Self: Sized,
     {
-        MappedConsumer {
-            consumer: self,
-            map,
-            map_failure,
-        }
+        Adapter::new(self)
     }
 }
 
-/// Produces goods to be stored in the stock of a market.
+/// Stores goods in a market.
 ///
-/// Only goods which are desirable will be added to the market. The determination if a good is desirable is defined by the implementer.
+/// Only goods which are desirable will be stored in the market. The determination if a good is desirable is defined by the implementer.
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for `fn produce()`; see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The type of the item being produced.
-    type Good: Debug + Display;
+    type Good;
     /// The type of the failure that could be thrown during production.
     type Failure: Error;
 
-    /// Attempts to produce `good` to the market without blocking.
+    /// Stores `good` in the market without blocking.
     ///
-    /// An error is thrown if and only if `good` was desirable but was not stored.
+    /// An error is thrown if and only if `good` was desirable but was not stored in the market.
+    ///
+    /// To ensure all functionality of the `Producer` performs as specified, the implementor MUST implement `produce` such that all of the following specifications are true:
+    ///
+    /// 1. `produce` returns without blocking the current process.
+    /// 2. If `good` is not desirable, `process` returns without storing anything in the market.
+    /// 3. If `good` is desirable but the market has no space available for `good`, `process` throws `ProduceError<Self::Failure>::FullStock`.
+    /// 4. If `good` is desirable but `{F}` of type `Self::Failure` is thrown, `produce` throws `ProduceError<Self::Failure>::Failure({F})`.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
     #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good);
 
-    /// Attempts to produce `good` without blocking and returns the good on failure.
-    #[throws(RecallGood<Self::Good, ProduceError<Self::Failure>>)]
+    /// Gives `good` to the market without blocking, returning the good on failure.
+    #[throws(Recall<Self::Good, Self::Failure>)]
     fn produce_or_recall(&self, good: Self::Good)
     where
-        Self::Good: Clone,
+        // Debug and Dislay bounds required by Recall.
+        Self::Good: Clone + Debug + Display,
     {
         self.produce(good.clone())
-            .map_err(|error| RecallGood { good, error })?
+            .map_err(|error| Recall::new(good, error))?
     }
 
-    /// Produces `good` to the market, blocking if needed.
+    /// Gives `good` to the market, blocking if needed.
     ///
     /// An error is thrown if and only if `good` was desirable but was not stored.
     #[inline]
     #[throws(Self::Failure)]
-    fn force(&self, good: Self::Good)
+    fn force(&self, mut good: Self::Good)
     where
-        Self::Good: Clone,
+        Self::Good: Clone + Debug + Display,
     {
-        let mut force_good = good;
-
         loop {
-            match self.produce_or_recall(force_good) {
+            match self.produce_or_recall(good) {
                 Ok(()) => break,
-                Err(RecallGood { good, error }) => match error {
-                    ProduceError::FullStock => {
-                        force_good = good;
-                    }
-                    ProduceError::Failure(failure) => throw!(failure),
-                },
+                Err(recall) => {
+                    good = recall.return_good_if_full()?;
+                }
             }
         }
     }
@@ -127,7 +128,7 @@ pub trait Producer {
     #[throws(Self::Failure)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
-        Self::Good: Clone,
+        Self::Good: Clone + Debug + Display,
     {
         for good in goods {
             self.force(good)?
@@ -135,160 +136,36 @@ pub trait Producer {
     }
 }
 
-/// A failure while consuming a good due to the market being closed.
-#[derive(Clone, Copy, Debug, ThisError)]
-#[error("market is closed")]
-pub struct ClosedMarketFailure;
-
-/// Describes why a good was not consumed.
-#[derive(Debug, ThisError)]
-pub enum ConsumeError<F>
-where
-    F: Error,
-{
-    /// The stock of the market is empty.
-    #[error("stock is empty")]
-    EmptyStock,
-    /// A failure to consume a good.
-    ///
-    /// Indicates the [`Consumer`] will not consume any more goods in the current state.
-    #[error("failure: {0}")]
-    Failure(F),
-}
-
-// TODO: Have to impl here due to ConsumeError being declared here. Would make more sense in channel.
-impl From<mpsc::TryRecvError> for ConsumeError<ClosedMarketFailure> {
-    #[inline]
-    fn from(value: mpsc::TryRecvError) -> Self {
-        match value {
-            mpsc::TryRecvError::Empty => Self::EmptyStock,
-            mpsc::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
-        }
-    }
-}
-
-// TODO: Have to impl here due to ConsumeError being declared here. Would make more sense in channel.
-impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure> {
-    #[inline]
-    fn from(value: crossbeam_channel::TryRecvError) -> Self {
-        match value {
-            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
-            crossbeam_channel::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
-        }
-    }
-}
-
-/// An error thrown while producing.
-#[derive(Debug, ThisError)]
-pub enum ProduceError<F: Error> {
-    /// An error to produce due to the stock of the market not having any room.
-    #[error("stock is full")]
-    FullStock,
-    /// An error to produce due to an invalid state.
-    #[error("failure: {0}")]
-    Failure(F),
-}
-
-#[allow(clippy::use_self)] // False positive for ProduceError<E>.
-impl<F> ProduceError<F>
-where
-    F: Error,
-{
-    /// Converts `ProduceError<F>` to `ProduceError<E>`
-    // TODO: This is a temporary fix until Rust allows implementing From<ProduceError<E>> for ProduceError<F>.
-    #[inline]
-    pub fn map<E, M>(self, map: M) -> ProduceError<E>
-    where
-        E: Error,
-        M: Fn(F) -> E,
-    {
-        match self {
-            Self::FullStock => ProduceError::FullStock,
-            Self::Failure(failure) => ProduceError::Failure((map)(failure)),
-        }
-    }
-}
-
-// TODO: Have to impl here due to ProduceError being declared here. Would make more sense in channel.
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
-    #[inline]
-    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
-        match value {
-            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
-        }
-    }
-}
-
-/// An error thrown while producing a good.
-#[derive(Debug, ThisError)]
-#[error("unable to produce good `{good}`: {error}")]
-pub struct RecallGood<G, F>
-where
-    G: Debug + Display,
-    F: Error,
-{
-    /// The good that was not produced.
-    good: G,
-    /// The error.
-    error: F,
-}
-
-impl<G, F> RecallGood<G, F>
-where
-    G: Debug + Display,
-    F: Error,
-{
-    /// Creates a new [`RecallGood`].
-    #[inline]
-    pub fn new(good: G, error: F) -> Self {
-        Self { good, error }
-    }
-}
-
-/// An error thrown while forcing a good.
-#[derive(Debug)]
-pub struct ForceGoodError<G, F> {
-    /// The good that was not produced.
-    good: G,
-    /// The failure.
-    failure: F,
-}
-
-impl<G, F> ForceGoodError<G, F> {
-    /// Returns a pointer to the good that was not produced when `self` was thrown.
-    #[inline]
-    pub const fn good(&self) -> &G {
-        &self.good
-    }
-
-    /// Returns a pointer to the failure that caused `self` to be thrown.
-    #[inline]
-    pub const fn failure(&self) -> &F {
-        &self.failure
-    }
-}
-
 /// A [`Consumer`] that maps the consumed good to a new good.
 #[derive(Debug)]
-pub struct MappedConsumer<C, M, F> {
+pub struct Adapter<C, G, F> {
     /// The original consumer.
     consumer: C,
-    /// The [`Fn`] to map from `C::Good` to `Self::Good`.
-    map: M,
-    /// The [`Fn`] to map from `C::Failure` to `Self::Failure`.
-    map_failure: F,
+    /// The desired type of `Self::Good`.
+    good: PhantomData<G>,
+    /// The desired type of `Self::Failure`.
+    failure: PhantomData<F>,
 }
 
-impl<G, E, C, M, F> Consumer for MappedConsumer<C, M, F>
+impl<C, G, F> Adapter<C, G, F> {
+    /// Creates a new [`Adapter`].
+    const fn new(consumer: C) -> Self {
+        Self {
+            consumer,
+            good: PhantomData,
+            failure: PhantomData,
+        }
+    }
+}
+
+impl<C, G, F> Consumer for Adapter<C, G, F>
 where
     C: Consumer,
-    M: Fn(C::Good) -> G,
-    F: Fn(C::Failure) -> E,
-    E: Error,
+    G: From<C::Good>,
+    F: From<C::Failure> + Error,
 {
     type Good = G;
-    type Failure = E;
+    type Failure = F;
 
     #[inline]
     #[throws(ConsumeError<Self::Failure>)]
@@ -298,10 +175,10 @@ where
             .map_err(|error| match error {
                 ConsumeError::EmptyStock => ConsumeError::EmptyStock,
                 ConsumeError::Failure(failure) => {
-                    ConsumeError::Failure((self.map_failure)(failure))
+                    ConsumeError::Failure(Self::Failure::from(failure))
                 }
             })
-            .map(|good| (self.map)(good))?
+            .map(Self::Good::from)?
     }
 }
 
@@ -330,7 +207,7 @@ impl<G, E> Collector<G, E> {
         G: From<C::Good> + 'static,
         E: From<C::Failure> + Error + 'static,
     {
-        self.push(consumer.map(G::from, E::from));
+        self.push(consumer.adapt());
     }
 
     /// Adds `consumer` to the end of the [`Consumer`]s held by `self`.
@@ -677,10 +554,6 @@ where
     }
 }
 
-/// An error that will never occur, equivalent to `!`.
-#[derive(Copy, Clone, Debug, ThisError)]
-pub enum NeverErr {}
-
 /// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
 ///
 /// An [`UnlimitedQueue`] can be closed, which prevents the [`Producer`] from producing new goods while allowing the [`Consumer`] to consume only the remaining goods on the queue.
@@ -781,7 +654,7 @@ where
     G: Debug,
 {
     type Good = G;
-    type Failure = NeverErr;
+    type Failure = Never;
 
     #[inline]
     #[throws(ConsumeError<Self::Failure>)]
@@ -795,8 +668,9 @@ where
     G: Debug + Display,
 {
     type Good = G;
-    type Failure = NeverErr;
+    type Failure = Never;
 
+    // TODO: Find a way to indicate this never fails.
     #[inline]
     #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {

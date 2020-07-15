@@ -115,7 +115,7 @@ lint: _install_lint
      -F clippy::correctness\
      -F clippy::restriction\
      -F clippy::style\
-     -F clippy::pedantic\
+     -D clippy::pedantic\
      -F clippy::complexity\
      -F clippy::perf\
      -F clippy::cargo\

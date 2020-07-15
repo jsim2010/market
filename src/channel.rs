@@ -34,6 +34,16 @@ impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
     }
 }
 
+impl From<mpsc::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: mpsc::TryRecvError) -> Self {
+        match value {
+            mpsc::TryRecvError::Empty => Self::EmptyStock,
+            mpsc::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+        }
+    }
+}
+
 /// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
 pub struct CrossbeamConsumer<G>
@@ -68,6 +78,16 @@ where
     }
 }
 
+impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: crossbeam_channel::TryRecvError) -> Self {
+        match value {
+            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
+            crossbeam_channel::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+        }
+    }
+}
+
 /// A [`crossbeam_channel::Sender`] that implements [`Producer`].
 #[derive(Debug)]
 pub struct CrossbeamProducer<G> {
@@ -93,5 +113,15 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     #[inline]
     fn from(value: crossbeam_channel::Sender<G>) -> Self {
         Self { tx: value }
+    }
+}
+
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
+    #[inline]
+    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
+        match value {
+            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
+        }
     }
 }
