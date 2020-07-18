@@ -2,7 +2,7 @@
 name = "market"
 version = "0.14.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
-description = "Infrastructure built around producers and consumers"
+description = "Infrastructure for producers and consumers"
 license = "MIT"
 repository = "https://github.com/jsim2010/market"
 readme = "README.md"
@@ -10,13 +10,10 @@ keywords = ["producer", "consumer"]
 categories = ["rust-patterns"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-crossbeam-channel = "0.4.0"
-# With, 0.2.1, unable to find impl Error for PopError
-crossbeam-queue = "= 0.2.0"
-fehler = "1.0.0"
-log = "0.4.8"
-never = "0.1.0"
-thiserror = "1.0.11"
+crossbeam-channel = "0.4"
+crossbeam-queue = "= 0.2"
+fehler = "1.0"
+log = "0.4"
+never = "0.1"
+thiserror = "1.0"

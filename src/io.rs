@@ -1,4 +1,4 @@
-//! Implements a [`Consumer`] that implements read functionality and a [`Producer`] that implements write functionality.
+//! Implements read and write functionality via a [`Consumer`] and [`Producer`] respectively.
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
@@ -19,7 +19,7 @@ use {
     },
 };
 
-/// Consumes goods of type `G` by reading bytes via an item implementing [`Read`].
+/// Consumes goods of type `G` from bytes read by an item implementing [`Read`].
 #[derive(Debug)]
 pub struct Reader<G> {
     /// The consumer.
@@ -27,7 +27,7 @@ pub struct Reader<G> {
 }
 
 impl<G> Reader<G> {
-    /// Creates a new [`Reader`] that reads bytes via `reader`.
+    /// Creates a new [`Reader`] that consumes goods from `reader`.
     #[inline]
     pub fn new<R>(reader: R) -> Self
     where
@@ -41,7 +41,7 @@ impl<G> Reader<G> {
 
 impl<G> Consumer for Reader<G>
 where
-    G: ComposeFrom<u8> + Debug,
+    G: ComposeFrom<u8>,
 {
     type Good = G;
     type Failure = <ComposingConsumer<ByteConsumer, G> as Consumer>::Failure;
@@ -95,7 +95,7 @@ where
 pub struct ByteConsumer {
     /// Consumes bytes from the reading thread.
     consumer: CrossbeamConsumer<u8>,
-    /// The handle to join the thread that processes writes.
+    /// The thread that reads bytes.
     join_handle: Option<JoinHandle<()>>,
     /// If the thread is quitting.
     is_quitting: Arc<AtomicBool>,
@@ -111,19 +111,15 @@ impl ByteConsumer {
 
         let join_handle = thread::spawn(move || {
             let mut buffer = [0; 1024];
+            let producer: CrossbeamProducer<u8> = tx.into();
 
             while !quitting.load(Ordering::Relaxed) {
                 match reader.read(&mut buffer) {
                     Ok(len) => {
                         let (bytes, _) = buffer.split_at(len);
 
-                        for byte in bytes {
-                            if tx.send(*byte).is_err() {
-                                error!(
-                                    "Quitting `ByteConsumer` thread due to channel disconnection."
-                                );
-                                break;
-                            }
+                        if let Err(error) = producer.force_all(bytes.to_vec()) {
+                            error!("`ByteConsumer` failed to store bytes: {}", error);
                         }
                     }
                     Err(error) => {

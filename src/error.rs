@@ -118,7 +118,7 @@ where
     /// Returns recalled good if recall was due to a full stock; otherwise throws failure.
     #[inline]
     #[throws(F)]
-    pub fn return_good_if_full(self) -> G {
+    pub fn good_if_full(self) -> G {
         match self.error {
             ProduceError::FullStock => self.good,
             ProduceError::Failure(failure) => {

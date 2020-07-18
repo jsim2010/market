@@ -1,6 +1,6 @@
-//! Standardizes traits for items that interact with markets.
+//! Infrastructure for producers and consumers.
 //!
-//! The core purpose of this library is to define the traits of items that interact with markets. A market stores goods in its stock. Producers add goods to the stock while consumers remove goods from the stock.
+//! The core purpose of this library is to define the traits of items that interact with markets. A market holds goods in a stock. Producers store goods in the stock while consumers retrieve goods from the stock.
 
 pub mod channel;
 mod error;
@@ -21,7 +21,7 @@ use {
     std::error::Error,
 };
 
-/// Retrieves goods stored in a market.
+/// Retrieves goods from a market.
 ///
 /// The order in which goods are retrieved is defined by the implementer.
 pub trait Consumer {
@@ -30,17 +30,41 @@ pub trait Consumer {
     /// The type of the error that could be thrown during consumption.
     type Failure: Error;
 
-    /// Retrieves the next currently available good from the market without blocking.
+    /// Retrieves the next good from the market without blocking.
     ///
     /// To ensure all functionality of the `Consumer` performs as specified, the implementor MUST implement `consume` such that all of the following specifications are true:
     ///
     /// 1. `consume` returns without blocking the current process.
-    /// 2. If no goods are currently available in the market, `consume` throws `ConsumeError<Self::Failure>::EmptyStock`.
-    /// 3. If `{F}` of type `Self::Failure` is thrown, `consume` throws `ConsumeError<Self::Failure>::Failure({F})`.
+    /// 2. If a good is available, `consume` returns a good.
+    /// 3. If the market is not holding any goods, `consume` throws `ConsumeError::EmptyStock`.
+    /// 4. If `{F}: Self::Failure` is thrown and the market is not holding any goods, `consume` throws `ConsumeError::Failure({F})`.
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good;
 
-    /// Retrieves the next good from the market.
+    /// Retrieves all goods held in the market without blocking.
+    #[inline]
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume_all(&self) -> Vec<Self::Good> {
+        let mut goods = Vec::new();
+
+        loop {
+            match self.consume() {
+                Ok(good) => {
+                    goods.push(good);
+                }
+                Err(error) => {
+                    if goods.is_empty() {
+                        throw!(error);
+                    } else {
+                        // Consumed 1 or more goods.
+                        break goods;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Retrieves the next good from the market, blocking until one is available.
     #[inline]
     #[throws(Self::Failure)]
     fn demand(&self) -> Self::Good {
@@ -58,7 +82,7 @@ pub trait Consumer {
         }
     }
 
-    /// Creates an [`Adapter`] that converts each consumption of the [`Consumer`] to the appropriate `G` or `F`.
+    /// Creates an [`Adapter`] that converts each consumption by `self` to the appropriate `G` or `F`.
     #[inline]
     fn adapt<G, F>(self) -> Adapter<Self, G, F>
     where
@@ -70,29 +94,31 @@ pub trait Consumer {
 
 /// Stores goods in a market.
 ///
-/// Only goods which are desirable will be stored in the market. The determination if a good is desirable is defined by the implementer.
+/// Only goods which pass inspection will be stored in the market. The inspection is defined by the implementer.
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for `fn produce()`; see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The type of the item being produced.
     type Good;
-    /// The type of the failure that could be thrown during production.
+    /// The type of the error that could be thrown during production.
     type Failure: Error;
 
     /// Stores `good` in the market without blocking.
     ///
-    /// An error is thrown if and only if `good` was desirable but was not stored in the market.
+    /// Throws an error if and only if `good` passes inspection but was not stored in the market. A good which fails inspection is "eaten", i.e. its memory is freed.
     ///
     /// To ensure all functionality of the `Producer` performs as specified, the implementor MUST implement `produce` such that all of the following specifications are true:
     ///
     /// 1. `produce` returns without blocking the current process.
-    /// 2. If `good` is not desirable, `process` returns without storing anything in the market.
-    /// 3. If `good` is desirable but the market has no space available for `good`, `process` throws `ProduceError<Self::Failure>::FullStock`.
-    /// 4. If `good` is desirable but `{F}` of type `Self::Failure` is thrown, `produce` throws `ProduceError<Self::Failure>::Failure({F})`.
+    /// 2. If `good` fails inspection, `process` returns without storing anything in the market.
+    /// 3. If `good` passes inspection but the market has no space available for `good`, `process` throws `ProduceError::FullStock`.
+    /// 4. If `good` passes inspection but `{F}: Self::Failure` is thrown, `produce` throws `ProduceError::Failure({F})`.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
     #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good);
 
-    /// Gives `good` to the market without blocking, returning the good on failure.
+    /// Stores `good` in the market without blocking, returning the good on failure.
+    ///
+    /// Throws an error if and only if `good` passes inspection but was not stored.
     #[throws(Recall<Self::Good, Self::Failure>)]
     fn produce_or_recall(&self, good: Self::Good)
     where
@@ -103,9 +129,9 @@ pub trait Producer {
             .map_err(|error| Recall::new(good, error))?
     }
 
-    /// Gives `good` to the market, blocking if needed.
+    /// Stores `good` in the market, blocking until space is available.
     ///
-    /// An error is thrown if and only if `good` was desirable but was not stored.
+    /// Throws an error if and only if `good` passes inspection but was not stored.
     #[inline]
     #[throws(Self::Failure)]
     fn force(&self, mut good: Self::Good)
@@ -116,15 +142,15 @@ pub trait Producer {
             match self.produce_or_recall(good) {
                 Ok(()) => break,
                 Err(recall) => {
-                    good = recall.return_good_if_full()?;
+                    good = recall.good_if_full()?;
                 }
             }
         }
     }
 
-    /// Produces every good in `goods`, blocking if needed.
+    /// Stores every good in `goods`, blocking until space is available.
     ///
-    /// An error is thrown if and only if a good was desirable but was not stored. All other goods after the failed good are not attempted.
+    /// Throws an error if and only if a good passes inspection but was not stored. All other goods after the failed good are not attempted.
     #[throws(Self::Failure)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
@@ -446,7 +472,7 @@ where
 impl<C, G> Consumer for ComposingConsumer<C, G>
 where
     C: Consumer,
-    G: ComposeFrom<<C as Consumer>::Good> + Debug,
+    G: ComposeFrom<<C as Consumer>::Good>,
     <C as Consumer>::Good: Debug,
 {
     type Good = G;
@@ -455,9 +481,9 @@ where
     #[inline]
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        let good = self.consumer.consume()?;
+        let mut goods = self.consumer.consume_all()?;
         let mut buffer = self.buffer.borrow_mut();
-        buffer.push(good);
+        buffer.append(&mut goods);
         G::compose_from(&mut buffer)?
     }
 }
