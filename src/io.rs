@@ -1,4 +1,4 @@
-//! Implements read and write functionality via a [`Consumer`] and [`Producer`] respectively.
+//! Implements `Consumer` and `Producer` for `std::io::Read` and `std::io::Write` trait objects.
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
@@ -19,7 +19,7 @@ use {
     },
 };
 
-/// Consumes goods of type `G` from bytes read by an item implementing [`Read`].
+/// Consumes goods of type `G` from bytes read by an item implementing `std::io::Read`.
 #[derive(Debug)]
 pub struct Reader<G> {
     /// The consumer.
@@ -27,7 +27,7 @@ pub struct Reader<G> {
 }
 
 impl<G> Reader<G> {
-    /// Creates a new [`Reader`] that consumes goods from `reader`.
+    /// Creates a new `Reader` that composes goods from the bytes consumed by `reader`.
     #[inline]
     pub fn new<R>(reader: R) -> Self
     where
@@ -44,7 +44,8 @@ where
     G: ComposeFrom<u8>,
 {
     type Good = G;
-    type Failure = <ComposingConsumer<ByteConsumer, G> as Consumer>::Failure;
+    // This is equivalent to <ByteConsumer as Consumer>::Failure. ClosedMarketFailure is prefered in order to keep ByteConsumer private.
+    type Failure = ClosedMarketFailure;
 
     #[inline]
     #[throws(ConsumeError<Self::Failure>)]
@@ -53,7 +54,7 @@ where
     }
 }
 
-/// Produces goods of type `G` by writing bytes via an item implementing [`Write`].
+/// Produces goods of type `G` by writing bytes via an item implementing `std::io::Write`.
 #[derive(Debug)]
 pub struct Writer<G> {
     /// The producer.
@@ -61,7 +62,7 @@ pub struct Writer<G> {
 }
 
 impl<G> Writer<G> {
-    /// Creates a new [`Writer`] that writes bytes via `writer`.
+    /// Creates a new `Writer` that strips bytes from goods and writes them using `writer`.
     #[inline]
     pub fn new<W>(writer: W) -> Self
     where
@@ -79,7 +80,8 @@ where
     G: Debug + Display,
 {
     type Good = G;
-    type Failure = <StrippingProducer<G, ByteProducer> as Producer>::Failure;
+    // This is equivalent to <ByteProducer as Producer>::Failure. ClosedMarketFailure is prefered in order to keep ByteProducer private.
+    type Failure = ClosedMarketFailure;
 
     #[inline]
     #[throws(ProduceError<Self::Failure>)]
@@ -92,7 +94,7 @@ where
 ///
 /// Reading is done in a separate thread to ensure consume() is non-blocking.
 #[derive(Debug)]
-pub struct ByteConsumer {
+struct ByteConsumer {
     /// Consumes bytes from the reading thread.
     consumer: CrossbeamConsumer<u8>,
     /// The thread that reads bytes.
@@ -163,7 +165,7 @@ impl Drop for ByteConsumer {
 ///
 /// Writing is done within a separate thread to ensure produce() is non-blocking.
 #[derive(Debug)]
-pub struct ByteProducer {
+struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
     producer: CrossbeamProducer<u8>,
     /// Consumes errors from the writing thread.
@@ -177,7 +179,7 @@ pub struct ByteProducer {
 impl ByteProducer {
     /// Creates a new [`ByteProducer`].
     #[inline]
-    pub fn new<W>(mut writer: W) -> Self
+    fn new<W>(mut writer: W) -> Self
     where
         W: Write + Send + 'static,
     {
@@ -187,15 +189,13 @@ impl ByteProducer {
         let is_quitting = Arc::clone(&is_dropping);
 
         let join_handle = thread::spawn(move || {
-            let mut buffer = [0; 1024];
-            let mut len: usize = 0;
+            let mut buffer = Vec::new();
 
             while !is_quitting.load(Ordering::Relaxed) {
-                for element in buffer.iter_mut() {
+                loop {
                     match rx.try_recv() {
                         Ok(byte) => {
-                            *element = byte;
-                            len = len.saturating_add(1);
+                            buffer.push(byte);
                         }
                         Err(TryRecvError::Empty) => {
                             break;
@@ -216,10 +216,8 @@ impl ByteProducer {
                     }
                 }
 
-                if len != 0 {
-                    let (bytes, _) = buffer.split_at(len);
-
-                    if let Err(error) = writer.write_all(bytes) {
+                if !buffer.is_empty() {
+                    if let Err(error) = writer.write_all(&buffer) {
                         if let Err(send_error) = err_tx.send(error) {
                             error!(
                                 "Unable to store `ByteProducer` write error: {}",
@@ -230,7 +228,7 @@ impl ByteProducer {
                         is_quitting.store(true, Ordering::Relaxed);
                     }
 
-                    len = 0;
+                    buffer.clear();
                 }
             }
         });

@@ -1,10 +1,17 @@
-//! Infrastructure for producers and consumers.
+//! Infrastructure for producers and consumers in a market.
 //!
-//! The core purpose of this library is to define the traits of items that interact with markets. A market holds goods in a stock. Producers store goods in the stock while consumers retrieve goods from the stock.
+//! A market is a stock of goods. A producer stores goods in the market while a consumer retrieves goods from the market.
+//!
+//! In the rust stdlib, the primary example of a market is [`std::sync::mpsc::channel`]. [`std::sync::mpsc::Sender`] is the producer and [`std::sync::mpsc::Receiver`] is the consumer.
+//!
+//! [`std::sync::mpsc::channel`]: https://doc.rust-lang.org/std/sync/mpsc/fn.channel.html
+//! [`std::sync::mpsc::Sender`]: https://doc.rust-lang.org/std/sync/mpsc/struct.Sender.html
+//! [`std::sync::mpsc::Receiver`]: https:://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html
 
 pub mod channel;
 mod error;
 pub mod io;
+pub mod process;
 
 pub use error::{ClosedMarketFailure, ConsumeError, ProduceError, Recall};
 
@@ -481,9 +488,11 @@ where
     #[inline]
     #[throws(ConsumeError<Self::Failure>)]
     fn consume(&self) -> Self::Good {
-        let mut goods = self.consumer.consume_all()?;
+        //let mut goods = self.consumer.consume_all()?;
+        let good = self.consumer.consume()?;
         let mut buffer = self.buffer.borrow_mut();
-        buffer.append(&mut goods);
+        buffer.push(good);
+        //buffer.append(&mut goods);
         G::compose_from(&mut buffer)?
     }
 }

@@ -1,4 +1,4 @@
-//! [`Consumer`] and [`Producer`] implementations for different channel implementations.
+//! Implements `Consumer` and `Producer` for various types of channels.
 use {
     crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer},
     core::fmt::{Debug, Display},
@@ -6,7 +6,10 @@ use {
     std::sync::mpsc,
 };
 
-/// A [`mpsc::Receiver`] that implements [`Consumer`].
+/// A [`std::sync::mpsc::Receiver`] that implements [`Consumer`].
+///
+/// [`std::sync::mpsc::Receiver`]: https:://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html
+/// [`Consumer`]: ../trait.Consumer.html
 #[derive(Debug)]
 pub struct StdConsumer<G> {
     /// The receiver.
@@ -44,13 +47,15 @@ impl From<mpsc::TryRecvError> for ConsumeError<ClosedMarketFailure> {
     }
 }
 
-/// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
+/// A `crossbeam_channel::Receiver` that implements [`Consumer`].
+///
+/// [`Consumer`]: ../trait.Consumer.html
 #[derive(Debug)]
 pub struct CrossbeamConsumer<G>
 where
     G: Debug,
 {
-    /// The [`crossbeam_channel::Recevier`].
+    /// The receiver.
     rx: crossbeam_channel::Receiver<G>,
 }
 
@@ -88,7 +93,9 @@ impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure>
     }
 }
 
-/// A [`crossbeam_channel::Sender`] that implements [`Producer`].
+/// A `crossbeam_channel::Sender` that implements [`Producer`].
+///
+/// [`Producer`]: ../trait.Producer.html
 #[derive(Debug)]
 pub struct CrossbeamProducer<G> {
     /// The sender.
