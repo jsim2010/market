@@ -34,7 +34,7 @@ use {
 pub trait Consumer {
     /// The type of the item being consumed.
     type Good;
-    /// The Error of the error that could be thrown during consumption.
+    /// The type of the error that could be thrown during consumption.
     type Error: Error;
 
     /// Retrieves the next good from the market without blocking.
@@ -100,8 +100,6 @@ pub trait Consumer {
 }
 
 /// Stores goods in a market.
-///
-/// Only goods which pass inspection will be stored in the market. The inspection is defined by the implementer.
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for `fn produce()`; see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The type of the item being produced.
@@ -111,21 +109,16 @@ pub trait Producer {
 
     /// Stores `good` in the market without blocking.
     ///
-    /// Throws an error if and only if `good` passes inspection but was not stored in the market. A good which fails inspection is "eaten", i.e. its memory is freed.
-    ///
     /// To ensure all functionality of the `Producer` performs as specified, the implementor MUST implement `produce` such that all of the following specifications are true:
     ///
     /// 1. `produce` returns without blocking the current process.
-    /// 2. If `good` fails inspection, `process` returns without storing anything in the market.
-    /// 3. If `good` passes inspection but the market has no space available for `good`, `process` throws `ProduceFailure::FullStock`.
-    /// 4. If `good` passes inspection but `{E}: Self::Error` is thrown, `produce` throws `ProduceFailure::Error({E})`.
+    /// 2. If `good` passes inspection but the market has no space available for `good`, `process` throws `ProduceFailure::FullStock`.
+    /// 3. If `good` passes inspection but `{E}: Self::Error` is thrown, `produce` throws `ProduceFailure::Error({E})`.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
     #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good);
 
     /// Stores `good` in the market without blocking, returning the good on failure.
-    ///
-    /// Throws an error if and only if `good` passes inspection but was not stored.
     #[throws(Recall<Self::Good, Self::Error>)]
     fn produce_or_recall(&self, good: Self::Good)
     where
@@ -137,8 +130,6 @@ pub trait Producer {
     }
 
     /// Stores `good` in the market, blocking until space is available.
-    ///
-    /// Throws an error if and only if `good` passes inspection but was not stored.
     #[inline]
     #[throws(Self::Error)]
     fn force(&self, mut good: Self::Good)
@@ -157,7 +148,7 @@ pub trait Producer {
 
     /// Stores every good in `goods`, blocking until space is available.
     ///
-    /// Throws an error if and only if a good passes inspection but was not stored. All other goods after the failed good are not attempted.
+    /// If an error is thrown, all goods remaining to be produced are not attempted.
     #[throws(Self::Error)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
@@ -546,44 +537,6 @@ where
         }
 
         input
-    }
-}
-
-/// Produces goods that an [`Inspector`] has allowed.
-#[derive(Debug)]
-pub struct ApprovedProducer<P, I> {
-    /// The producer.
-    producer: P,
-    /// The inspector.
-    inspector: I,
-}
-
-impl<P, I> ApprovedProducer<P, I> {
-    /// Creates a new [`ApprovedProducer`].
-    #[inline]
-    pub const fn new(producer: P, inspector: I) -> Self {
-        Self {
-            producer,
-            inspector,
-        }
-    }
-}
-
-impl<P, I> Producer for ApprovedProducer<P, I>
-where
-    P: Producer,
-    <P as Producer>::Good: Debug + Display,
-    I: Inspector<Good = <P as Producer>::Good>,
-{
-    type Good = <P as Producer>::Good;
-    type Error = <P as Producer>::Error;
-
-    #[inline]
-    #[throws(ProduceFailure<Self::Error>)]
-    fn produce(&self, good: Self::Good) {
-        if self.inspector.allows(&good) {
-            self.producer.produce(good)?
-        }
     }
 }
 
