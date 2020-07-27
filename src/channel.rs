@@ -1,6 +1,6 @@
 //! Implements `Consumer` and `Producer` for various types of channels.
 use {
-    crate::{ClosedMarketFailure, ConsumeError, Consumer, ProduceError, Producer},
+    crate::{ClosedMarketError, ConsumeFailure, Consumer, ProduceFailure, Producer},
     core::fmt::{Debug, Display},
     fehler::throws,
     std::sync::mpsc,
@@ -21,10 +21,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClosedMarketFailure;
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }
@@ -37,12 +37,12 @@ impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
     }
 }
 
-impl From<mpsc::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+impl From<mpsc::TryRecvError> for ConsumeFailure<ClosedMarketError> {
     #[inline]
     fn from(value: mpsc::TryRecvError) -> Self {
         match value {
             mpsc::TryRecvError::Empty => Self::EmptyStock,
-            mpsc::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+            mpsc::TryRecvError::Disconnected => Self::Error(ClosedMarketError),
         }
     }
 }
@@ -64,10 +64,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClosedMarketFailure;
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }
@@ -83,12 +83,12 @@ where
     }
 }
 
-impl From<crossbeam_channel::TryRecvError> for ConsumeError<ClosedMarketFailure> {
+impl From<crossbeam_channel::TryRecvError> for ConsumeFailure<ClosedMarketError> {
     #[inline]
     fn from(value: crossbeam_channel::TryRecvError) -> Self {
         match value {
             crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
-            crossbeam_channel::TryRecvError::Disconnected => Self::Failure(ClosedMarketFailure),
+            crossbeam_channel::TryRecvError::Disconnected => Self::Error(ClosedMarketError),
         }
     }
 }
@@ -107,10 +107,10 @@ where
     G: Debug + Display,
 {
     type Good = G;
-    type Failure = ClosedMarketFailure;
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         self.tx.try_send(good)?
     }
@@ -123,12 +123,12 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     }
 }
 
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceError<ClosedMarketFailure> {
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceFailure<ClosedMarketError> {
     #[inline]
     fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
         match value {
             crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Failure(ClosedMarketFailure),
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Error(ClosedMarketError),
         }
     }
 }

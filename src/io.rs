@@ -2,8 +2,8 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ClosedMarketFailure, ComposeFrom, ComposingConsumer, ConsumeError, Consumer, ProduceError,
-        Producer, StripFrom, StrippingProducer,
+        ClosedMarketError, ComposeFrom, ComposingConsumer, ConsumeFailure, Consumer,
+        ProduceFailure, Producer, StripFrom, StrippingProducer,
     },
     core::{
         fmt::{Debug, Display},
@@ -44,11 +44,11 @@ where
     G: ComposeFrom<u8>,
 {
     type Good = G;
-    // This is equivalent to <ByteConsumer as Consumer>::Failure. ClosedMarketFailure is prefered in order to keep ByteConsumer private.
-    type Failure = ClosedMarketFailure;
+    // This is equivalent to <ByteConsumer as Consumer>::Error. ClosedMarketError is prefered in order to keep ByteConsumer private.
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
@@ -80,11 +80,11 @@ where
     G: Debug + Display,
 {
     type Good = G;
-    // This is equivalent to <ByteProducer as Producer>::Failure. ClosedMarketFailure is prefered in order to keep ByteProducer private.
-    type Failure = ClosedMarketFailure;
+    // This is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
@@ -141,10 +141,10 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Failure = ClosedMarketFailure;
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
@@ -255,10 +255,10 @@ impl Drop for ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Failure = ClosedMarketFailure;
+    type Error = ClosedMarketError;
 
     #[inline]
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }

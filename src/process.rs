@@ -2,7 +2,7 @@
 use {
     crate::{
         io::{Reader, Writer},
-        ComposeFrom, ConsumeError, Consumer, ProduceError, Producer, StripFrom,
+        ComposeFrom, ConsumeFailure, Consumer, ProduceFailure, Producer, StripFrom,
     },
     core::{
         cell::RefCell,
@@ -81,10 +81,10 @@ where
     O: ComposeFrom<u8> + Display,
 {
     type Good = O;
-    type Failure = <Reader<O> as Consumer>::Failure;
+    type Error = <Reader<O> as Consumer>::Error;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         self.output.consume()?
     }
@@ -96,10 +96,10 @@ where
     I: Debug + Display,
 {
     type Good = I;
-    type Failure = <Writer<I> as Producer>::Failure;
+    type Error = <Writer<I> as Producer>::Error;
 
     #[inline]
-    #[throws(ProduceError<Self::Failure>)]
+    #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
         self.input.produce(good)?
     }
@@ -118,10 +118,10 @@ pub struct Waiter {
 
 impl Consumer for Waiter {
     type Good = ExitStatus;
-    type Failure = WaitProcessError;
+    type Error = WaitProcessError;
 
     #[inline]
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         if let Some(status) =
             self.child
@@ -134,7 +134,7 @@ impl Consumer for Waiter {
         {
             status
         } else {
-            throw!(ConsumeError::EmptyStock);
+            throw!(ConsumeFailure::EmptyStock);
         }
     }
 }

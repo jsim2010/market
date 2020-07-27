@@ -2,7 +2,7 @@
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
-    market::{ConsumeError, Consumer},
+    market::{ConsumeFailure, Consumer},
     std::{
         error::Error,
         fmt::{self, Display},
@@ -37,15 +37,15 @@ impl MockConsumer {
 
 impl Consumer for MockConsumer {
     type Good = u8;
-    type Failure = MockFailure;
+    type Error = MockError;
 
-    #[throws(ConsumeError<Self::Failure>)]
+    #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
         if self.shall_fail {
-            throw!(ConsumeError::Failure(MockFailure));
+            throw!(ConsumeFailure::Error(MockError));
         } else if self.is_empty.load(Ordering::Relaxed) {
             self.is_empty.store(false, Ordering::Relaxed);
-            throw!(ConsumeError::EmptyStock);
+            throw!(ConsumeFailure::EmptyStock);
         } else {
             self.good
         }
@@ -53,15 +53,15 @@ impl Consumer for MockConsumer {
 }
 
 #[derive(Debug, PartialEq)]
-struct MockFailure;
+struct MockError;
 
-impl Display for MockFailure {
+impl Display for MockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MockFailure")
+        write!(f, "MockError")
     }
 }
 
-impl Error for MockFailure {}
+impl Error for MockError {}
 
 /// If `consume` returns a good, `demand` returns it.
 #[test]
@@ -72,7 +72,7 @@ fn demand_returns_current_good() {
     assert_eq!(consumer.demand(), Ok(GOOD));
 }
 
-/// If `consume` returns `ConsumeError::EmptyStock`, `demand` shall call `consume` again.
+/// If `consume` returns `ConsumeFailure::EmptyStock`, `demand` shall call `consume` again.
 #[test]
 fn demand_blocks_until_good_is_found() {
     const GOOD: u8 = 2;
@@ -81,10 +81,10 @@ fn demand_blocks_until_good_is_found() {
     assert_eq!(consumer.demand(), Ok(GOOD));
 }
 
-/// If `consume` returns `ConsumeError::Failure({F})`, `demand` shall return `{F}`.
+/// If `consume` returns `ConsumeFailure::Error({E})`, `demand` shall return `{E}`.
 #[test]
 fn demand_returns_failure() {
     let consumer = MockConsumer::new(1).mock_failure();
 
-    assert_eq!(consumer.demand(), Err(MockFailure));
+    assert_eq!(consumer.demand(), Err(MockError));
 }
