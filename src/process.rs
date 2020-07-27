@@ -4,8 +4,11 @@ use {
         io::{Reader, Writer},
         ComposeFrom, ConsumeError, Consumer, ProduceError, Producer, StripFrom,
     },
-    core::fmt::{Debug, Display},
-    fehler::throws,
+    core::{
+        cell::RefCell,
+        fmt::{Debug, Display},
+    },
+    fehler::{throw, throws},
     std::{
         io,
         process::{Child, Command, ExitStatus, Stdio},
@@ -20,17 +23,14 @@ use {
 /// stderr is read by consuming from `Process::stderr()`.
 #[derive(Debug)]
 pub struct Process<I, O, E> {
-    // Used for providing information to errors.
-    /// A printable representation of the command executed by the process.
-    command: String,
-    /// The handle of the process.
-    handle: Child,
     /// The stdin of the process.
     input: Writer<I>,
     /// The stdout of the process.
     output: Reader<O>,
     /// The stderr of the process.
     error: Reader<E>,
+    /// The `Waiter` of the process.
+    waiter: Waiter,
 }
 
 impl<I, O, E> Process<I, O, E> {
@@ -39,7 +39,7 @@ impl<I, O, E> Process<I, O, E> {
     #[throws(CreateProcessError)]
     pub fn new(mut command: Command) -> Self {
         let command_string = format!("{:?}", command);
-        let mut handle = command
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -47,17 +47,19 @@ impl<I, O, E> Process<I, O, E> {
             .map_err(|error| CreateProcessError::new(&command_string, error))?;
 
         Self {
-            input: Writer::new(handle.stdin.take().ok_or_else(|| {
+            input: Writer::new(child.stdin.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stdin".to_string()))
             })?),
-            output: Reader::new(handle.stdout.take().ok_or_else(|| {
+            output: Reader::new(child.stdout.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stdout".to_string()))
             })?),
-            error: Reader::new(handle.stderr.take().ok_or_else(|| {
+            error: Reader::new(child.stderr.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stderr".to_string()))
             })?),
-            command: command_string,
-            handle,
+            waiter: Waiter {
+                child: RefCell::new(child),
+                command: command_string,
+            },
         }
     }
 
@@ -67,14 +69,10 @@ impl<I, O, E> Process<I, O, E> {
         &self.error
     }
 
-    /// Waits for the process to exit.
+    /// Returns the `Consumer` of the `ExitStatus` of the process.
     #[inline]
-    #[throws(WaitProcessError)]
-    pub fn wait(&mut self) -> ExitStatus {
-        self.handle.wait().map_err(|error| WaitProcessError {
-            command: self.command.clone(),
-            error,
-        })?
+    pub const fn waiter(&self) -> &Waiter {
+        &self.waiter
     }
 }
 
@@ -104,6 +102,40 @@ where
     #[throws(ProduceError<Self::Failure>)]
     fn produce(&self, good: Self::Good) {
         self.input.produce(good)?
+    }
+}
+
+/// Consumes the `ExitStatus` of a process.
+#[derive(Debug)]
+pub struct Waiter {
+    // Used for providing information to errors.
+    /// A printable representation of the command executed by the process.
+    command: String,
+    // Use RefCell due to try_wait() requiring Child to be mut.
+    /// The process.
+    child: RefCell<Child>,
+}
+
+impl Consumer for Waiter {
+    type Good = ExitStatus;
+    type Failure = WaitProcessError;
+
+    #[inline]
+    #[throws(ConsumeError<Self::Failure>)]
+    fn consume(&self) -> Self::Good {
+        if let Some(status) =
+            self.child
+                .borrow_mut()
+                .try_wait()
+                .map_err(|error| WaitProcessError {
+                    command: self.command.clone(),
+                    error,
+                })?
+        {
+            status
+        } else {
+            throw!(ConsumeError::EmptyStock);
+        }
     }
 }
 

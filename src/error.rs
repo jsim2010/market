@@ -1,5 +1,5 @@
 //! Implements errors thrown by `market`.
-#![allow(clippy::module_name_repetitions)]
+#![allow(clippy::module_name_repetitions)] // Module is not public so public items are re-exported and thus their use does not have any repetition.
 use {
     core::fmt::{Debug, Display},
     fehler::{throw, throws},
