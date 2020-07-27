@@ -42,13 +42,15 @@ pub trait Consumer {
     /// To ensure all functionality of the `Consumer` performs as specified, the implementor MUST implement `consume` such that all of the following specifications are true:
     ///
     /// 1. `consume` returns without blocking the current process.
-    /// 2. If a good is available, `consume` returns a good.
-    /// 3. If the market is not holding any goods, `consume` throws `ConsumeFailure::EmptyStock`.
-    /// 4. If `{E}: Self::Error` is thrown and the market is not holding any goods, `consume` throws `ConsumeFailure::Error({E})`.
+    /// 2. If a good is available to the `Consumer`, `consume` returns the good.
+    /// 3. If `{E}: Self::Error` is thrown, `consume` throws `ConsumeFailure::Error({E})`.
+    /// 4. If the market is not holding any goods, `consume` throws `ConsumeFailure::EmptyStock`.
     #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good;
 
     /// Retrieves all goods held in the market without blocking.
+    ///
+    /// If an error is thrown after consuming 1 or more goods, the consumption stops and the error is ignored.
     #[inline]
     #[throws(ConsumeFailure<Self::Error>)]
     fn consume_all(&self) -> Vec<Self::Good> {
@@ -112,8 +114,9 @@ pub trait Producer {
     /// To ensure all functionality of the `Producer` performs as specified, the implementor MUST implement `produce` such that all of the following specifications are true:
     ///
     /// 1. `produce` returns without blocking the current process.
-    /// 2. If `good` passes inspection but the market has no space available for `good`, `process` throws `ProduceFailure::FullStock`.
-    /// 3. If `good` passes inspection but `{E}: Self::Error` is thrown, `produce` throws `ProduceFailure::Error({E})`.
+    /// 2. If the market has space available for `good`, `process` stores good in the market.
+    /// 3. If the market has no space available for `good`, `process` throws `ProduceFailure::FullStock`.
+    /// 4. If `{E}: Self::Error` is thrown, `produce` throws `ProduceFailure::Error({E})`.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
     #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good);
@@ -477,11 +480,9 @@ where
     #[inline]
     #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
-        //let mut goods = self.consumer.consume_all()?;
-        let good = self.consumer.consume()?;
+        let mut goods = self.consumer.consume_all()?;
         let mut buffer = self.buffer.borrow_mut();
-        buffer.push(good);
-        //buffer.append(&mut goods);
+        buffer.append(&mut goods);
         G::compose_from(&mut buffer)?
     }
 }
