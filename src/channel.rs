@@ -47,6 +47,44 @@ impl From<mpsc::TryRecvError> for ConsumeFailure<ClosedMarketError> {
     }
 }
 
+/// A [`std::sync::mpsc::Sender`] that implements [`Producer`].
+///
+/// [`std::sync::mpsc::Sender`]: https:://doc.rust-lang.org/std/sync/mpsc/struct.Sender.html
+/// [`Producer`]: ../trait.Producer.html
+#[derive(Debug)]
+pub struct StdProducer<G> {
+    /// The sender.
+    tx: mpsc::Sender<G>,
+}
+
+impl<G> Producer for StdProducer<G>
+where
+    G: Debug,
+{
+    type Good = G;
+    type Error = ClosedMarketError;
+
+    #[inline]
+    #[throws(ProduceFailure<Self::Error>)]
+    fn produce(&self, good: Self::Good) {
+        self.tx.send(good)?
+    }
+}
+
+impl<G> From<mpsc::Sender<G>> for StdProducer<G> {
+    #[inline]
+    fn from(value: mpsc::Sender<G>) -> Self {
+        Self { tx: value }
+    }
+}
+
+impl<G> From<mpsc::SendError<G>> for ProduceFailure<ClosedMarketError> {
+    #[inline]
+    fn from(_value: mpsc::SendError<G>) -> Self {
+        Self::Error(ClosedMarketError)
+    }
+}
+
 /// A `crossbeam_channel::Receiver` that implements [`Consumer`].
 ///
 /// [`Consumer`]: ../trait.Consumer.html

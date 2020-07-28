@@ -12,6 +12,7 @@ pub mod channel;
 mod error;
 pub mod io;
 pub mod process;
+pub mod sync;
 
 pub use error::{ClosedMarketError, ConsumeFailure, ProduceFailure, Recall};
 
@@ -52,7 +53,7 @@ pub trait Consumer {
     ///
     /// If an error is thrown after consuming 1 or more goods, the consumption stops and the error is ignored.
     #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(Self::Error)]
     fn consume_all(&self) -> Vec<Self::Good> {
         let mut goods = Vec::new();
 
@@ -61,9 +62,12 @@ pub trait Consumer {
                 Ok(good) => {
                     goods.push(good);
                 }
-                Err(error) => {
+                Err(failure) => {
                     if goods.is_empty() {
-                        throw!(error);
+                        match failure {
+                            ConsumeFailure::EmptyStock => break goods,
+                            ConsumeFailure::Error(error) => throw!(error),
+                        }
                     } else {
                         // Consumed 1 or more goods.
                         break goods;
