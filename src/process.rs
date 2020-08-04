@@ -79,6 +79,7 @@ impl<I, O, E> Process<I, O, E> {
 impl<I, O, E> Consumer for Process<I, O, E>
 where
     O: ComposeFrom<u8> + Display,
+    <O as ComposeFrom<u8>>::Error: 'static,
 {
     type Good = O;
     type Error = <Reader<O> as Consumer>::Error;
@@ -94,6 +95,7 @@ impl<I, O, E> Producer for Process<I, O, E>
 where
     u8: StripFrom<I>,
     I: Debug + Display,
+    <u8 as StripFrom<I>>::Error: 'static,
 {
     type Good = I;
     type Error = <Writer<I> as Producer>::Error;

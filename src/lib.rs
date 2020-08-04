@@ -14,7 +14,10 @@ pub mod io;
 pub mod process;
 pub mod sync;
 
-pub use error::{ClosedMarketError, ConsumeFailure, ProduceFailure, Recall};
+pub use error::{
+    ClosedMarketError, ComposeFailure, ConsumeCompositeError, ConsumeFailure, ProduceFailure,
+    ProducePartsError, Recall,
+};
 
 use {
     core::{
@@ -36,7 +39,7 @@ pub trait Consumer {
     /// The type of the item being consumed.
     type Good;
     /// The type of the error that could be thrown during consumption.
-    type Error: Error;
+    type Error: Error + 'static;
 
     /// Retrieves the next good from the market without blocking.
     ///
@@ -142,6 +145,7 @@ pub trait Producer {
     fn force(&self, mut good: Self::Good)
     where
         Self::Good: Clone + Debug + Display,
+        Self::Error: 'static,
     {
         loop {
             match self.produce_or_recall(good) {
@@ -160,11 +164,44 @@ pub trait Producer {
     fn force_all(&self, goods: Vec<Self::Good>)
     where
         Self::Good: Clone + Debug + Display,
+        Self::Error: 'static,
     {
         for good in goods {
             self.force(good)?
         }
     }
+}
+
+/// Converts a single good into parts.
+pub trait StripFrom<G>
+where
+    Self: Sized,
+{
+    /// The type of the error that could be thrown during stripping.
+    type Error: Error;
+
+    /// Converts `good` into [`Vec`] of parts.
+    #[throws(Self::Error)]
+    fn strip_from(good: G) -> Vec<Self>;
+}
+
+/// Converts an array of parts into a composite good.
+pub trait ComposeFrom<G>
+where
+    Self: Sized,
+{
+    /// The type of the error that could be thrown during composition.
+    type Error: Error;
+
+    /// Converts `parts` into a composite good.
+    ///
+    /// The logic followed by the implementor MUST be as follows:
+    ///
+    /// 1. If range `0..x` of `parts` is invalid, removes the invalid range from `parts` and throws `ComposeFailure::Error`.
+    /// 2. If `parts` cannot be composed but could be beginning of a valid buffer, keeps `parts` the same and throws `ComposeFailure::Incomplete`.
+    /// 3. If range `0..x` of `parts` can be composed into `Self`, removes the range from `parts` and returns the composite good.
+    #[throws(ComposeFailure<Self::Error>)]
+    fn compose_from(parts: &mut Vec<G>) -> Self;
 }
 
 /// A [`Consumer`] that maps the consumed good to a new good.
@@ -193,7 +230,7 @@ impl<C, G, F> Consumer for Adapter<C, G, F>
 where
     C: Consumer,
     G: From<C::Good>,
-    F: From<C::Error> + Error,
+    F: From<C::Error> + Error + 'static,
 {
     type Good = G;
     type Error = F;
@@ -218,7 +255,10 @@ pub struct Collector<G, E> {
     consumers: Vec<Box<dyn Consumer<Good = G, Error = E>>>,
 }
 
-impl<G, E> Collector<G, E> {
+impl<G, E> Collector<G, E>
+where
+    E: 'static,
+{
     /// Creates a new, empty [`Collector`].
     #[must_use]
     #[inline]
@@ -252,7 +292,7 @@ impl<G, E> Collector<G, E> {
 
 impl<G, E> Consumer for Collector<G, E>
 where
-    E: Error,
+    E: Error + 'static,
 {
     type Good = G;
     type Error = E;
@@ -285,18 +325,9 @@ impl<G, E> Debug for Collector<G, E> {
     }
 }
 
-/// Converts a single good into parts.
-pub trait StripFrom<G>
-where
-    Self: Sized,
-{
-    /// Converts `good` into [`Vec`] of parts.
-    fn strip_from(good: &G) -> Vec<Self>;
-}
-
 /// A [`Producer`] of type `P` that produces parts stripped from goods of type `G`.
 #[derive(Debug)]
-pub struct StrippingProducer<G, P>
+pub(crate) struct StrippingProducer<G, P>
 where
     P: Producer,
     <P as Producer>::Good: Debug,
@@ -316,7 +347,7 @@ where
 {
     /// Creates a new [`StrippingProducer`].
     #[inline]
-    pub fn new(producer: P) -> Self {
+    pub(crate) fn new(producer: P) -> Self {
         Self {
             producer,
             phantom: PhantomData,
@@ -330,116 +361,94 @@ where
     P: Producer,
     G: Debug + Display,
     <P as Producer>::Good: StripFrom<G> + Clone + Debug,
-    <P as Producer>::Error: Error,
+    <P as Producer>::Error: Error + 'static,
+    <<P as Producer>::Good as StripFrom<G>>::Error: 'static,
 {
     type Good = G;
-    type Error = <P as Producer>::Error;
+    type Error =
+        ProducePartsError<<<P as Producer>::Good as StripFrom<G>>::Error, <P as Producer>::Error>;
 
     #[inline]
     #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
-        let parts = <<P as Producer>::Good>::strip_from(&good);
+        let parts = <<P as Producer>::Good>::strip_from(good).map_err(ProducePartsError::Strip)?;
 
         for part in parts {
-            if let Err(error) = self.producer.produce(part) {
-                throw!(error);
-            }
+            self.producer
+                .produce(part)
+                .map_err(ProduceFailure::map_into)?;
         }
     }
 }
 
-/// Consumes parts from a [`Consumer`] of composite goods.
-#[derive(Debug)]
-pub struct StrippingConsumer<C, P> {
-    /// The consumer of composite goods.
-    consumer: C,
-    /// The queue of stripped parts.
-    parts: SegQueue<P>,
-}
-
-impl<C, P> StrippingConsumer<C, P>
-where
-    C: Consumer,
-    P: StripFrom<<C as Consumer>::Good>,
-{
-    /// Creates a new [`StrippingConsumer`]
-    #[inline]
-    pub fn new(consumer: C) -> Self {
-        Self {
-            consumer,
-            parts: SegQueue::new(),
-        }
-    }
-
-    /// Consumes all stocked composite goods and strips them into parts.
-    ///
-    /// Runs until a [`ConsumerError`] is thrown.
-    fn strip(&self) -> ConsumeFailure<<C as Consumer>::Error> {
-        let error;
-
-        loop {
-            match self.consumer.consume() {
-                Ok(composite) => {
-                    for part in P::strip_from(&composite) {
-                        self.parts.push(part);
-                    }
-                }
-                Err(e) => {
-                    error = e;
-                    break;
-                }
-            }
-        }
-
-        error
-    }
-}
-
-impl<C, P> Consumer for StrippingConsumer<C, P>
-where
-    C: Consumer,
-    P: StripFrom<<C as Consumer>::Good> + Debug,
-{
-    type Good = P;
-    type Error = <C as Consumer>::Error;
-
-    #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
-    fn consume(&self) -> Self::Good {
-        // Store result of strip because all stocked parts should be consumed prior to failing.
-        let error = self.strip();
-
-        if let Ok(part) = self.parts.pop() {
-            part
-        } else {
-            throw!(error);
-        }
-    }
-}
-
-/// The Error thrown when failing to compose parts into a composite good.
-#[derive(Copy, Clone, Debug)]
-pub struct NonComposible;
-
-impl<T> From<NonComposible> for ConsumeFailure<T>
-where
-    T: Error,
-{
-    #[inline]
-    fn from(_: NonComposible) -> Self {
-        Self::EmptyStock
-    }
-}
-
-/// Converts an array of parts into a composite good.
-pub trait ComposeFrom<G>
-where
-    Self: Sized,
-{
-    #[throws(NonComposible)]
-    /// Converts `parts` into a composite good.
-    fn compose_from(parts: &mut Vec<G>) -> Self;
-}
+///// Consumes parts from a [`Consumer`] of composite goods.
+//#[derive(Debug)]
+//pub struct StrippingConsumer<C, P> {
+//    /// The consumer of composite goods.
+//    consumer: C,
+//    /// The queue of stripped parts.
+//    parts: SegQueue<P>,
+//}
+//
+//impl<C, P> StrippingConsumer<C, P>
+//where
+//    C: Consumer,
+//    P: StripFrom<<C as Consumer>::Good>,
+//{
+//    /// Creates a new [`StrippingConsumer`]
+//    #[inline]
+//    pub fn new(consumer: C) -> Self {
+//        Self {
+//            consumer,
+//            parts: SegQueue::new(),
+//        }
+//    }
+//
+//    /// Consumes all stocked composite goods and strips them into parts.
+//    ///
+//    /// Runs until a [`ConsumerError`] is thrown.
+//    fn strip(&self) -> ConsumeFailure<<C as Consumer>::Error> {
+//        let error;
+//
+//        loop {
+//            match self.consumer.consume() {
+//                Ok(composite) => {
+//                    for part in P::strip_from(composite) {
+//                        self.parts.push(part);
+//                    }
+//                }
+//                Err(e) => {
+//                    error = e;
+//                    break;
+//                }
+//            }
+//        }
+//
+//        error
+//    }
+//}
+//
+//impl<C, P> Consumer for StrippingConsumer<C, P>
+//where
+//    C: Consumer,
+//    P: StripFrom<<C as Consumer>::Good> + Debug,
+//{
+//    type Good = P;
+//    type Error = <C as Consumer>::Error;
+//
+//    #[inline]
+//    #[throws(ConsumeFailure<Self::Error>)]
+//    fn consume(&self) -> Self::Good {
+//        // Store result of strip because all stocked parts should be consumed prior to failing.
+//        let error = self.strip();
+//
+//        if let Ok(part) = self.parts.pop() {
+//            part
+//        } else {
+//            throw!(error);
+//        }
+//    }
+//}
 
 /// Consumes composite goods of type `G` from a parts [`Consumer`] of type `C`.
 #[derive(Debug)]
@@ -477,17 +486,24 @@ where
     C: Consumer,
     G: ComposeFrom<<C as Consumer>::Good>,
     <C as Consumer>::Good: Debug,
+    <G as ComposeFrom<<C as Consumer>::Good>>::Error: 'static,
 {
     type Good = G;
-    type Error = <C as Consumer>::Error;
+    type Error = ConsumeCompositeError<
+        <G as ComposeFrom<<C as Consumer>::Good>>::Error,
+        <C as Consumer>::Error,
+    >;
 
     #[inline]
     #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
-        let mut goods = self.consumer.consume_all()?;
+        let mut goods = self.consumer.consume_all().map_err(Self::Error::Consume)?;
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut goods);
-        G::compose_from(&mut buffer)?
+        G::compose_from(&mut buffer).map_err(|error| match error {
+            ComposeFailure::Incomplete => ConsumeFailure::EmptyStock,
+            ComposeFailure::Error(e) => ConsumeFailure::Error(Self::Error::Compose(e)),
+        })?
     }
 }
 

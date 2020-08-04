@@ -11,7 +11,7 @@ use {
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
 pub enum ConsumeFailure<E>
 where
-    E: Error,
+    E: Error + 'static,
 {
     /// The stock of the market is empty.
     #[error("stock is empty")]
@@ -19,8 +19,7 @@ where
     /// An error was thrown during consumption.
     ///
     /// Indicates the [`Consumer`] will not consume any more goods in its current state.
-    // Using #[error(transparent)] here would require adding explicit lifetime bounds to E.
-    #[error("{0}")]
+    #[error(transparent)]
     Error(E),
 }
 
@@ -56,7 +55,7 @@ where
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
 pub enum ProduceFailure<E>
 where
-    E: Error,
+    E: Error + 'static,
 {
     /// The stock of the market is full.
     #[error("stock is full")]
@@ -64,8 +63,7 @@ where
     /// An error was thrown during production.
     ///
     /// Indicates the [`Producer`] will not produce any more goods in its current state.
-    // Using #[error(transparent)] here would require adding explicit lifetime bounds to E.
-    #[error("{0}")]
+    #[error(transparent)]
     Error(E),
 }
 
@@ -103,7 +101,7 @@ where
 pub struct Recall<G, E>
 where
     G: Debug + Display,
-    E: Error,
+    E: Error + 'static,
 {
     /// The good that was not produced.
     good: G,
@@ -139,3 +137,59 @@ where
 #[derive(Clone, Copy, Debug, ThisError)]
 #[error("market is closed")]
 pub struct ClosedMarketError;
+
+/// Producer failed to strip and produce good.
+#[derive(Debug, ThisError)]
+pub enum ProducePartsError<S, P>
+where
+    S: Error + 'static,
+    P: Error + 'static,
+{
+    /// Producer failed to strip good.
+    // For now, unable to mark both as #[from] due to inability to indicate S != P. Chose Produce as from to ease use with map_into.
+    #[error("cannot strip: {0}")]
+    Strip(#[source] S),
+    /// Producer failed to produce good.
+    #[error("cannot produce: {0}")]
+    Produce(#[from] P),
+}
+
+/// A failure to compose a good.
+#[derive(Debug, ThisError)]
+pub enum ComposeFailure<E>
+where
+    E: Error,
+{
+    /// Composition is currently not possible but could be after pushing additional parts.
+    #[error("not enough parts")]
+    Incomplete,
+    /// An error was caught while composing.
+    #[error("cannot compose: {0}")]
+    Error(E),
+}
+
+impl<E> From<E> for ComposeFailure<E>
+where
+    E: Error,
+{
+    #[inline]
+    fn from(value: E) -> Self {
+        Self::Error(value)
+    }
+}
+
+/// A consumer failed to compose and consume a good.
+#[derive(Debug, ThisError)]
+pub enum ConsumeCompositeError<M, N>
+where
+    M: Error + 'static,
+    N: Error + 'static,
+{
+    /// Consumer failed to compose good.
+    // For now, unable to mark both as #[from] due to inability to indicate M != N. Chose Consume as from to ease use with map_into.
+    #[error("cannot compose: {0}")]
+    Compose(#[source] M),
+    /// Consumer failed to consume good.
+    #[error("cannot consume: {0}")]
+    Consume(#[from] N),
+}

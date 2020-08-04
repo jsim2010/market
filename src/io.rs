@@ -2,8 +2,8 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ClosedMarketError, ComposeFrom, ComposingConsumer, ConsumeFailure, Consumer,
-        ProduceFailure, Producer, StripFrom, StrippingProducer,
+        ClosedMarketError, ComposeFrom, ComposingConsumer, ConsumeCompositeError, ConsumeFailure,
+        Consumer, ProduceFailure, ProducePartsError, Producer, StripFrom, StrippingProducer,
     },
     core::{
         fmt::{Debug, Display},
@@ -42,10 +42,11 @@ impl<G> Reader<G> {
 impl<G> Consumer for Reader<G>
 where
     G: ComposeFrom<u8>,
+    <G as ComposeFrom<u8>>::Error: 'static,
 {
     type Good = G;
     // This is equivalent to <ByteConsumer as Consumer>::Error. ClosedMarketError is prefered in order to keep ByteConsumer private.
-    type Error = ClosedMarketError;
+    type Error = ConsumeCompositeError<<G as ComposeFrom<u8>>::Error, ClosedMarketError>;
 
     #[inline]
     #[throws(ConsumeFailure<Self::Error>)]
@@ -78,10 +79,11 @@ impl<G> Producer for Writer<G>
 where
     u8: StripFrom<G>,
     G: Debug + Display,
+    <u8 as StripFrom<G>>::Error: 'static,
 {
     type Good = G;
-    // This is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
-    type Error = ClosedMarketError;
+    // ClosedMarketError is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
+    type Error = ProducePartsError<<u8 as StripFrom<G>>::Error, ClosedMarketError>;
 
     #[inline]
     #[throws(ProduceFailure<Self::Error>)]
