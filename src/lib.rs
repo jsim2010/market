@@ -13,6 +13,7 @@ mod error;
 pub mod io;
 pub mod process;
 pub mod sync;
+pub mod thread;
 
 pub use {
     error::{
@@ -138,6 +139,14 @@ pub trait Producer {
     {
         self.produce(good.clone())
             .map_err(|error| Recall::new(good, error))?
+    }
+
+    /// Stores each good in `goods` in the market without blocking.
+    #[throws(ProduceFailure<Self::Error>)]
+    fn produce_all(&self, goods: Vec<Self::Good>) {
+        for good in goods {
+            self.produce(good)?
+        }
     }
 
     /// Stores `good` in the market, blocking until space is available.

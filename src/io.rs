@@ -2,8 +2,9 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
+        thread::{Thread, Void},
         ClosedMarketError, ConsumeCompositeError, ConsumeFailure, Consumer, ProduceFailure,
-        ProducePartsError, Producer,
+        Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
@@ -77,6 +78,7 @@ where
 #[derive(Debug)]
 pub struct Writer<G> {
     /// The byte producer.
+    // TODO: Move ByteProducer into Writer.
     byte_producer: ByteProducer,
     #[doc(hidden)]
     phantom: PhantomData<G>,
@@ -103,16 +105,40 @@ where
 {
     type Good = G;
     // ClosedMarketError is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
-    type Error = ProducePartsError<<G as DisassembleInto<u8>>::Error, ClosedMarketError>;
+    type Error = WriteError<G>;
 
     #[inline]
     #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
-        for byte in good.disassemble_into().map_err(Self::Error::Strip)? {
-            self.byte_producer
-                .produce(byte)
-                .map_err(ProduceFailure::map_into)?
-        }
+        self.byte_producer
+            .produce_all(good.disassemble_into().map_err(Self::Error::Disassemble)?)
+            .map_err(ProduceFailure::map_into)?
+    }
+}
+
+/// An error while writing a good of type `G`.
+#[derive(Debug, thiserror::Error)]
+pub enum WriteError<G>
+where
+    G: DisassembleInto<u8> + Debug,
+    <G as DisassembleInto<u8>>::Error: 'static,
+{
+    /// Unable to disassemble the good into bytes.
+    #[error("{0}")]
+    // This cannot be #[from] as it conflicts with From<T> for T
+    Disassemble(#[source] <G as DisassembleInto<u8>>::Error),
+    /// Writer was closed.
+    #[error("writer was closed")]
+    Closed,
+}
+
+impl<G> From<ClosedMarketError> for WriteError<G>
+where
+    G: DisassembleInto<u8> + Debug,
+{
+    #[inline]
+    fn from(_: ClosedMarketError) -> Self {
+        Self::Closed
     }
 }
 
@@ -196,10 +222,10 @@ struct ByteProducer {
     producer: CrossbeamProducer<u8>,
     /// Consumes errors from the writing thread.
     error_consumer: CrossbeamConsumer<io::Error>,
-    /// The handle to join the thread that processes writes.
-    join_handle: Option<JoinHandle<()>>,
     /// If `Self` is currently being dropped.
     is_dropping: Arc<AtomicBool>,
+    /// The thread.
+    thread: Thread<Void>,
 }
 
 impl ByteProducer {
@@ -214,7 +240,7 @@ impl ByteProducer {
         let is_dropping = Arc::new(AtomicBool::new(false));
         let is_quitting = Arc::clone(&is_dropping);
 
-        let join_handle = thread::spawn(move || {
+        let thread = Thread::new(move || {
             let mut buffer = Vec::new();
 
             while !is_quitting.load(Ordering::Relaxed) {
@@ -257,13 +283,15 @@ impl ByteProducer {
                     buffer.clear();
                 }
             }
+
+            Void
         });
 
         Self {
             producer: tx.into(),
             error_consumer: err_rx.into(),
-            join_handle: Some(join_handle),
             is_dropping,
+            thread,
         }
     }
 }
@@ -273,7 +301,7 @@ impl Drop for ByteProducer {
     fn drop(&mut self) {
         self.is_dropping.store(true, Ordering::Relaxed);
 
-        if let Some(Err(error)) = self.join_handle.take().map(JoinHandle::join) {
+        if let Err(error) = self.thread.demand() {
             error!("Unable to join `ByteProducer` thread: {:?}", error);
         }
     }
