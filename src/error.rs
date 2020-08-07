@@ -1,6 +1,7 @@
 //! Implements errors thrown by `market`.
 #![allow(clippy::module_name_repetitions)] // Module is not public so public items are re-exported and thus their use does not have any repetition.
 use {
+    conventus::AssembleFailure,
     core::fmt::{Debug, Display},
     fehler::{throw, throws},
     std::error::Error,
@@ -37,6 +38,20 @@ where
         match self {
             Self::EmptyStock => ConsumeFailure::EmptyStock,
             Self::Error(error) => ConsumeFailure::Error(error.into()),
+        }
+    }
+}
+
+// TODO: Ideally could do From<AssembleFailure<E>> for ConsumeFailure<F> where F: From<E>. However this is overriden by From<E> for ConsumeFailure<E> since there is no way to indicate F != AssembleFailure<E>.
+impl<E> From<AssembleFailure<E>> for ConsumeFailure<E>
+where
+    E: Error,
+{
+    #[inline]
+    fn from(value: AssembleFailure<E>) -> Self {
+        match value {
+            AssembleFailure::Incomplete => Self::EmptyStock,
+            AssembleFailure::Error(error) => Self::Error(error),
         }
     }
 }
@@ -152,30 +167,6 @@ where
     /// Producer failed to produce good.
     #[error("cannot produce: {0}")]
     Produce(#[from] P),
-}
-
-/// A failure to compose a good.
-#[derive(Debug, ThisError)]
-pub enum ComposeFailure<E>
-where
-    E: Error,
-{
-    /// Composition is currently not possible but could be after pushing additional parts.
-    #[error("not enough parts")]
-    Incomplete,
-    /// An error was caught while composing.
-    #[error("cannot compose: {0}")]
-    Error(E),
-}
-
-impl<E> From<E> for ComposeFailure<E>
-where
-    E: Error,
-{
-    #[inline]
-    fn from(value: E) -> Self {
-        Self::Error(value)
-    }
 }
 
 /// A consumer failed to compose and consume a good.

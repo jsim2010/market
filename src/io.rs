@@ -2,11 +2,14 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ClosedMarketError, ComposeFrom, ComposingConsumer, ConsumeCompositeError, ConsumeFailure,
-        Consumer, ProduceFailure, ProducePartsError, Producer, StripFrom, StrippingProducer,
+        ClosedMarketError, ConsumeCompositeError, ConsumeFailure, Consumer, ProduceFailure,
+        ProducePartsError, Producer,
     },
+    conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
+        cell::RefCell,
         fmt::{Debug, Display},
+        marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::TryRecvError,
@@ -23,7 +26,11 @@ use {
 #[derive(Debug)]
 pub struct Reader<G> {
     /// The consumer.
-    consumer: ComposingConsumer<ByteConsumer, G>,
+    byte_consumer: ByteConsumer,
+    /// The current buffer of bytes.
+    buffer: RefCell<Vec<u8>>,
+    #[doc(hidden)]
+    phantom: PhantomData<G>,
 }
 
 impl<G> Reader<G> {
@@ -34,32 +41,45 @@ impl<G> Reader<G> {
         R: Read + Send + 'static,
     {
         Self {
-            consumer: ComposingConsumer::new(ByteConsumer::new(reader)),
+            byte_consumer: ByteConsumer::new(reader),
+            buffer: RefCell::new(Vec::new()),
+            phantom: PhantomData,
         }
     }
 }
 
 impl<G> Consumer for Reader<G>
 where
-    G: ComposeFrom<u8>,
-    <G as ComposeFrom<u8>>::Error: 'static,
+    G: AssembleFrom<u8>,
+    <G as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
     // This is equivalent to <ByteConsumer as Consumer>::Error. ClosedMarketError is prefered in order to keep ByteConsumer private.
-    type Error = ConsumeCompositeError<<G as ComposeFrom<u8>>::Error, ClosedMarketError>;
+    type Error = ConsumeCompositeError<<G as AssembleFrom<u8>>::Error, ClosedMarketError>;
 
     #[inline]
     #[throws(ConsumeFailure<Self::Error>)]
     fn consume(&self) -> Self::Good {
-        self.consumer.consume()?
+        let mut bytes = self
+            .byte_consumer
+            .consume_all()
+            .map_err(Self::Error::Consume)?;
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.append(&mut bytes);
+        G::assemble_from(&mut buffer).map_err(|error| match error {
+            AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
+            AssembleFailure::Error(e) => ConsumeFailure::Error(ConsumeCompositeError::Compose(e)),
+        })?
     }
 }
 
 /// Produces goods of type `G` by writing bytes via an item implementing `std::io::Write`.
 #[derive(Debug)]
 pub struct Writer<G> {
-    /// The producer.
-    producer: StrippingProducer<G, ByteProducer>,
+    /// The byte producer.
+    byte_producer: ByteProducer,
+    #[doc(hidden)]
+    phantom: PhantomData<G>,
 }
 
 impl<G> Writer<G> {
@@ -70,25 +90,29 @@ impl<G> Writer<G> {
         W: Write + Send + 'static,
     {
         Self {
-            producer: StrippingProducer::new(ByteProducer::new(writer)),
+            byte_producer: ByteProducer::new(writer),
+            phantom: PhantomData,
         }
     }
 }
 
 impl<G> Producer for Writer<G>
 where
-    u8: StripFrom<G>,
-    G: Debug + Display,
-    <u8 as StripFrom<G>>::Error: 'static,
+    G: DisassembleInto<u8> + Debug + Display,
+    <G as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = G;
     // ClosedMarketError is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
-    type Error = ProducePartsError<<u8 as StripFrom<G>>::Error, ClosedMarketError>;
+    type Error = ProducePartsError<<G as DisassembleInto<u8>>::Error, ClosedMarketError>;
 
     #[inline]
     #[throws(ProduceFailure<Self::Error>)]
     fn produce(&self, good: Self::Good) {
-        self.producer.produce(good)?
+        for byte in good.disassemble_into().map_err(Self::Error::Strip)? {
+            self.byte_producer
+                .produce(byte)
+                .map_err(ProduceFailure::map_into)?
+        }
     }
 }
 

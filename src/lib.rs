@@ -14,21 +14,22 @@ pub mod io;
 pub mod process;
 pub mod sync;
 
-pub use error::{
-    ClosedMarketError, ComposeFailure, ConsumeCompositeError, ConsumeFailure, ProduceFailure,
-    ProducePartsError, Recall,
+pub use {
+    error::{
+        ClosedMarketError, ConsumeCompositeError, ConsumeFailure, ProduceFailure,
+        ProducePartsError, Recall,
+    },
+    never::Never,
 };
 
 use {
     core::{
-        cell::RefCell,
         fmt::{self, Debug, Display},
         marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
-    never::Never,
     std::error::Error,
 };
 
@@ -172,38 +173,6 @@ pub trait Producer {
     }
 }
 
-/// Converts a single good into parts.
-pub trait StripFrom<G>
-where
-    Self: Sized,
-{
-    /// The type of the error that could be thrown during stripping.
-    type Error: Error;
-
-    /// Converts `good` into [`Vec`] of parts.
-    #[throws(Self::Error)]
-    fn strip_from(good: G) -> Vec<Self>;
-}
-
-/// Converts an array of parts into a composite good.
-pub trait ComposeFrom<G>
-where
-    Self: Sized,
-{
-    /// The type of the error that could be thrown during composition.
-    type Error: Error;
-
-    /// Converts `parts` into a composite good.
-    ///
-    /// The logic followed by the implementor MUST be as follows:
-    ///
-    /// 1. If range `0..x` of `parts` is invalid, removes the invalid range from `parts` and throws `ComposeFailure::Error`.
-    /// 2. If `parts` cannot be composed but could be beginning of a valid buffer, keeps `parts` the same and throws `ComposeFailure::Incomplete`.
-    /// 3. If range `0..x` of `parts` can be composed into `Self`, removes the range from `parts` and returns the composite good.
-    #[throws(ComposeFailure<Self::Error>)]
-    fn compose_from(parts: &mut Vec<G>) -> Self;
-}
-
 /// A [`Consumer`] that maps the consumed good to a new good.
 #[derive(Debug)]
 pub struct Adapter<C, G, F> {
@@ -325,187 +294,62 @@ impl<G, E> Debug for Collector<G, E> {
     }
 }
 
-/// A [`Producer`] of type `P` that produces parts stripped from goods of type `G`.
-#[derive(Debug)]
-pub(crate) struct StrippingProducer<G, P>
-where
-    P: Producer,
-    <P as Producer>::Good: Debug,
-{
-    #[doc(hidden)]
-    phantom: PhantomData<G>,
-    /// The producer of parts.
-    producer: P,
-    /// Parts stripped from a composite good yet to be produced.
-    parts: RefCell<Vec<<P as Producer>::Good>>,
-}
-
-impl<G, P> StrippingProducer<G, P>
-where
-    P: Producer,
-    <P as Producer>::Good: Debug,
-{
-    /// Creates a new [`StrippingProducer`].
-    #[inline]
-    pub(crate) fn new(producer: P) -> Self {
-        Self {
-            producer,
-            phantom: PhantomData,
-            parts: RefCell::new(Vec::new()),
-        }
-    }
-}
-
-impl<G, P> Producer for StrippingProducer<G, P>
-where
-    P: Producer,
-    G: Debug + Display,
-    <P as Producer>::Good: StripFrom<G> + Clone + Debug,
-    <P as Producer>::Error: Error + 'static,
-    <<P as Producer>::Good as StripFrom<G>>::Error: 'static,
-{
-    type Good = G;
-    type Error =
-        ProducePartsError<<<P as Producer>::Good as StripFrom<G>>::Error, <P as Producer>::Error>;
-
-    #[inline]
-    #[throws(ProduceFailure<Self::Error>)]
-    fn produce(&self, good: Self::Good) {
-        let parts = <<P as Producer>::Good>::strip_from(good).map_err(ProducePartsError::Strip)?;
-
-        for part in parts {
-            self.producer
-                .produce(part)
-                .map_err(ProduceFailure::map_into)?;
-        }
-    }
-}
-
-///// Consumes parts from a [`Consumer`] of composite goods.
+///// Consumes composite goods of type `G` from a parts [`Consumer`] of type `C`.
 //#[derive(Debug)]
-//pub struct StrippingConsumer<C, P> {
-//    /// The consumer of composite goods.
-//    consumer: C,
-//    /// The queue of stripped parts.
-//    parts: SegQueue<P>,
-//}
-//
-//impl<C, P> StrippingConsumer<C, P>
+//pub struct ComposingConsumer<C, G>
 //where
 //    C: Consumer,
-//    P: StripFrom<<C as Consumer>::Good>,
+//    <C as Consumer>::Good: Debug,
 //{
-//    /// Creates a new [`StrippingConsumer`]
+//    /// The consumer.
+//    consumer: C,
+//    /// The current buffer of parts.
+//    buffer: RefCell<Vec<<C as Consumer>::Good>>,
+//    #[doc(hidden)]
+//    phantom: PhantomData<G>,
+//}
+//
+//impl<C, G> ComposingConsumer<C, G>
+//where
+//    C: Consumer,
+//    <C as Consumer>::Good: Debug,
+//{
+//    /// Creates a new [`ComposingConsumer`].
 //    #[inline]
 //    pub fn new(consumer: C) -> Self {
 //        Self {
 //            consumer,
-//            parts: SegQueue::new(),
+//            buffer: RefCell::new(Vec::new()),
+//            phantom: PhantomData,
 //        }
-//    }
-//
-//    /// Consumes all stocked composite goods and strips them into parts.
-//    ///
-//    /// Runs until a [`ConsumerError`] is thrown.
-//    fn strip(&self) -> ConsumeFailure<<C as Consumer>::Error> {
-//        let error;
-//
-//        loop {
-//            match self.consumer.consume() {
-//                Ok(composite) => {
-//                    for part in P::strip_from(composite) {
-//                        self.parts.push(part);
-//                    }
-//                }
-//                Err(e) => {
-//                    error = e;
-//                    break;
-//                }
-//            }
-//        }
-//
-//        error
 //    }
 //}
 //
-//impl<C, P> Consumer for StrippingConsumer<C, P>
+//impl<C, G> Consumer for ComposingConsumer<C, G>
 //where
 //    C: Consumer,
-//    P: StripFrom<<C as Consumer>::Good> + Debug,
+//    <C as Consumer>::Good: Debug,
+//    G: AssembleFrom<<C as Consumer>::Good>,
+//    <G as AssembleFrom<<C as Consumer>::Good>>::Error: 'static,
 //{
-//    type Good = P;
-//    type Error = <C as Consumer>::Error;
+//    type Good = G;
+//    type Error = ConsumeCompositeError<
+//        <G as AssembleFrom<<C as Consumer>::Good>>::Error,
+//        <C as Consumer>::Error,
+//    >;
 //
 //    #[inline]
 //    #[throws(ConsumeFailure<Self::Error>)]
 //    fn consume(&self) -> Self::Good {
-//        // Store result of strip because all stocked parts should be consumed prior to failing.
-//        let error = self.strip();
-//
-//        if let Ok(part) = self.parts.pop() {
-//            part
-//        } else {
-//            throw!(error);
-//        }
+//        let mut goods = self.consumer.consume_all().map_err(Self::Error::Consume)?;
+//        let mut buffer = self.buffer.borrow_mut();
+//        buffer.append(&mut goods);
+//        G::compose_from(&mut buffer).map_err(|error| match error {
+//            ComposeFailure::Incomplete => ConsumeFailure::EmptyStock,
+//            ComposeFailure::Error(e) => ConsumeFailure::Error(Self::Error::Compose(e)),
+//        })?
 //    }
 //}
-
-/// Consumes composite goods of type `G` from a parts [`Consumer`] of type `C`.
-#[derive(Debug)]
-pub struct ComposingConsumer<C, G>
-where
-    C: Consumer,
-    <C as Consumer>::Good: Debug,
-{
-    /// The consumer.
-    consumer: C,
-    /// The current buffer of parts.
-    buffer: RefCell<Vec<<C as Consumer>::Good>>,
-    #[doc(hidden)]
-    phantom: PhantomData<G>,
-}
-
-impl<C, G> ComposingConsumer<C, G>
-where
-    C: Consumer,
-    <C as Consumer>::Good: Debug,
-{
-    /// Creates a new [`ComposingConsumer`].
-    #[inline]
-    pub fn new(consumer: C) -> Self {
-        Self {
-            consumer,
-            buffer: RefCell::new(Vec::new()),
-            phantom: PhantomData,
-        }
-    }
-}
-
-impl<C, G> Consumer for ComposingConsumer<C, G>
-where
-    C: Consumer,
-    G: ComposeFrom<<C as Consumer>::Good>,
-    <C as Consumer>::Good: Debug,
-    <G as ComposeFrom<<C as Consumer>::Good>>::Error: 'static,
-{
-    type Good = G;
-    type Error = ConsumeCompositeError<
-        <G as ComposeFrom<<C as Consumer>::Good>>::Error,
-        <C as Consumer>::Error,
-    >;
-
-    #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
-    fn consume(&self) -> Self::Good {
-        let mut goods = self.consumer.consume_all().map_err(Self::Error::Consume)?;
-        let mut buffer = self.buffer.borrow_mut();
-        buffer.append(&mut goods);
-        G::compose_from(&mut buffer).map_err(|error| match error {
-            ComposeFailure::Incomplete => ConsumeFailure::EmptyStock,
-            ComposeFailure::Error(e) => ConsumeFailure::Error(Self::Error::Compose(e)),
-        })?
-    }
-}
 
 /// Inspects if goods meet defined requirements.
 pub trait Inspector {

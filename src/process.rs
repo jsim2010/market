@@ -2,8 +2,9 @@
 use {
     crate::{
         io::{Reader, Writer},
-        ComposeFrom, ConsumeFailure, Consumer, ProduceFailure, Producer, StripFrom,
+        ConsumeFailure, Consumer, ProduceFailure, Producer,
     },
+    conventus::{AssembleFrom, DisassembleInto},
     core::{
         cell::RefCell,
         fmt::{Debug, Display},
@@ -78,8 +79,8 @@ impl<I, O, E> Process<I, O, E> {
 
 impl<I, O, E> Consumer for Process<I, O, E>
 where
-    O: ComposeFrom<u8> + Display,
-    <O as ComposeFrom<u8>>::Error: 'static,
+    O: AssembleFrom<u8> + Display,
+    <O as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
     type Error = <Reader<O> as Consumer>::Error;
@@ -93,9 +94,8 @@ where
 
 impl<I, O, E> Producer for Process<I, O, E>
 where
-    u8: StripFrom<I>,
-    I: Debug + Display,
-    <u8 as StripFrom<I>>::Error: 'static,
+    I: DisassembleInto<u8> + Debug + Display,
+    <I as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
     type Error = <Writer<I> as Producer>::Error;
