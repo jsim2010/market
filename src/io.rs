@@ -55,7 +55,7 @@ where
     <G as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
-    // This is equivalent to <ByteConsumer as Consumer>::Error. ClosedMarketError is prefered in order to keep ByteConsumer private.
+    // ClosedMarketError is prefered to the equivalent and more general <ByteConsumer as Consumer>::Error in order to keep ByteConsumer private.
     type Error = ConsumeCompositeError<<G as AssembleFrom<u8>>::Error, ClosedMarketError>;
 
     #[inline]
