@@ -1,5 +1,8 @@
 //! Implements errors thrown by `market`.
-#![allow(clippy::module_name_repetitions)] // Module is not public so public items are re-exported and thus their use does not have any repetition.
+//!
+//! There are 2 categories of errors thrown by `market`.
+//! 1) Failures: These indicate that an action was not successful, but the state of the market is still valid.
+//! 2) Faults: These indicate that the market is currently in a state that no attempted action will be successful until the state is changed (if possible).
 use {
     conventus::AssembleFailure,
     core::fmt::{Debug, Display},
@@ -8,141 +11,142 @@ use {
     thiserror::Error as ThisError,
 };
 
-/// The `Consumer` failed to consume a good.
+/// A `Consumer` failed to consume a good.
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
-pub enum ConsumeFailure<E>
+pub enum ConsumeFailure<T>
 where
-    E: Error + 'static,
+    T: Error + 'static,
 {
     /// The stock of the market is empty.
     #[error("stock is empty")]
     EmptyStock,
-    /// An error was thrown during consumption.
+    /// A fault was thrown during consumption.
     ///
-    /// Indicates the [`Consumer`] will not consume any more goods in its current state.
+    /// Indicates the [`Consumer`] is currently in a state where it will not consume any more goods.
     #[error(transparent)]
-    Error(E),
+    Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ConsumeFailure<E>.
-impl<E> ConsumeFailure<E>
+#[allow(clippy::use_self)] // False positive for ConsumeFailure<T>.
+impl<T> ConsumeFailure<T>
 where
-    E: Error,
+    T: Error,
 {
-    /// Converts `ConsumeFailure<E>` into `ConsumeFailure<F>`.
+    // This is done because From<ConsumeFailure<T>> for ConsumeFailure<U> cannot.
+    /// Converts `ConsumeFailure<T>` into `ConsumeFailure<U>`.
     #[inline]
-    pub fn map_into<F>(self) -> ConsumeFailure<F>
+    pub fn map_into<U>(self) -> ConsumeFailure<U>
     where
-        F: Error + From<E>,
+        U: Error + From<T>,
     {
         match self {
             Self::EmptyStock => ConsumeFailure::EmptyStock,
-            Self::Error(error) => ConsumeFailure::Error(error.into()),
+            Self::Fault(fault) => ConsumeFailure::Fault(fault.into()),
         }
     }
 }
 
 // TODO: Ideally could do From<AssembleFailure<E>> for ConsumeFailure<F> where F: From<E>. However this is overriden by From<E> for ConsumeFailure<E> since there is no way to indicate F != AssembleFailure<E>.
-impl<E> From<AssembleFailure<E>> for ConsumeFailure<E>
+impl<T> From<AssembleFailure<T>> for ConsumeFailure<T>
 where
-    E: Error,
+    T: Error,
 {
     #[inline]
-    fn from(value: AssembleFailure<E>) -> Self {
-        match value {
+    fn from(failure: AssembleFailure<T>) -> Self {
+        match failure {
             AssembleFailure::Incomplete => Self::EmptyStock,
-            AssembleFailure::Error(error) => Self::Error(error),
+            AssembleFailure::Error(error) => Self::Fault(error),
         }
     }
 }
 
-impl<E> From<E> for ConsumeFailure<E>
+impl<T> From<T> for ConsumeFailure<T>
 where
-    E: Error,
+    T: Error,
 {
     #[inline]
-    fn from(value: E) -> Self {
-        Self::Error(value)
+    fn from(fault: T) -> Self {
+        Self::Fault(fault)
     }
 }
 
-/// The `Producer` failed to produce a good.
+/// A `Producer` failed to produce a good.
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
-pub enum ProduceFailure<E>
+pub enum ProduceFailure<T>
 where
-    E: Error + 'static,
+    T: Error + 'static,
 {
     /// The stock of the market is full.
     #[error("stock is full")]
     FullStock,
-    /// An error was thrown during production.
+    /// A fault was thrown during production.
     ///
-    /// Indicates the [`Producer`] will not produce any more goods in its current state.
+    /// Indicates the [`Producer`] is currently in a state where it will not produce any more goods.
     #[error(transparent)]
-    Error(E),
+    Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ProduceFailure<E>.
-impl<E> ProduceFailure<E>
+#[allow(clippy::use_self)] // False positive for ProduceFailure<T>.
+impl<T> ProduceFailure<T>
 where
-    E: Error,
+    T: Error,
 {
-    /// Converts `self` into `ProduceFailure<F>`
+    /// Converts `self` into `ProduceFailure<U>`
     #[inline]
-    pub fn map_into<F>(self) -> ProduceFailure<F>
+    pub fn map_into<U>(self) -> ProduceFailure<U>
     where
-        F: Error + From<E>,
+        U: Error + From<T>,
     {
         match self {
             Self::FullStock => ProduceFailure::FullStock,
-            Self::Error(failure) => ProduceFailure::Error(failure.into()),
+            Self::Fault(fault) => ProduceFailure::Fault(fault.into()),
         }
     }
 }
 
-impl<E> From<E> for ProduceFailure<E>
+impl<T> From<T> for ProduceFailure<T>
 where
-    E: Error,
+    T: Error,
 {
     #[inline]
-    fn from(value: E) -> Self {
-        Self::Error(value)
+    fn from(fault: T) -> Self {
+        Self::Fault(fault)
     }
 }
 
 /// Returns a good that a `Producer` failed to produce.
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
 #[error("failed to produce good `{good}`: {failure}")]
-pub struct Recall<G, E>
+pub struct Recall<G, T>
 where
     G: Debug + Display,
-    E: Error + 'static,
+    T: Error + 'static,
 {
     /// The good that was not produced.
     good: G,
     /// The reason the production failed.
-    failure: ProduceFailure<E>,
+    failure: ProduceFailure<T>,
 }
 
-impl<G, E> Recall<G, E>
+impl<G, T> Recall<G, T>
 where
     G: Debug + Display,
-    E: Error,
+    T: Error,
 {
     /// Creates a new [`Recall`].
     #[inline]
-    pub fn new(good: G, failure: ProduceFailure<E>) -> Self {
+    pub fn new(good: G, failure: ProduceFailure<T>) -> Self {
         Self { good, failure }
     }
 
-    /// Returns the recalled good if recall was due to a full stock; otherwise throws failure.
+    /// Returns the recalled good if `self` is the result of a full stock; otherwise throws the fault.
     #[inline]
-    #[throws(E)]
+    #[throws(T)]
     pub fn overstock(self) -> G {
         match self.failure {
             ProduceFailure::FullStock => self.good,
-            ProduceFailure::Error(failure) => {
-                throw!(failure);
+            ProduceFailure::Fault(fault) => {
+                throw!(fault);
             }
         }
     }
@@ -151,36 +155,4 @@ where
 /// An error interacting with a market due to the market being closed.
 #[derive(Clone, Copy, Debug, ThisError)]
 #[error("market is closed")]
-pub struct ClosedMarketError;
-
-/// Producer failed to strip and produce good.
-#[derive(Debug, ThisError)]
-pub enum ProducePartsError<S, P>
-where
-    S: Error + 'static,
-    P: Error + 'static,
-{
-    /// Producer failed to strip good.
-    // For now, unable to mark both as #[from] due to inability to indicate S != P. Chose Produce as from to ease use with map_into.
-    #[error("cannot strip: {0}")]
-    Strip(#[source] S),
-    /// Producer failed to produce good.
-    #[error("cannot produce: {0}")]
-    Produce(#[from] P),
-}
-
-/// A consumer failed to compose and consume a good.
-#[derive(Debug, ThisError)]
-pub enum ConsumeCompositeError<M, N>
-where
-    M: Error + 'static,
-    N: Error + 'static,
-{
-    /// Consumer failed to compose good.
-    // For now, unable to mark both as #[from] due to inability to indicate M != N. Chose Consume as from to ease use with map_into.
-    #[error("cannot compose: {0}")]
-    Compose(#[source] M),
-    /// Consumer failed to consume good.
-    #[error("cannot consume: {0}")]
-    Consume(#[from] N),
-}
+pub struct ClosedMarketFault;

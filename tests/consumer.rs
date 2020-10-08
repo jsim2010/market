@@ -37,12 +37,12 @@ impl MockConsumer {
 
 impl Consumer for MockConsumer {
     type Good = u8;
-    type Error = MockError;
+    type Fault = MockFault;
 
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
         if self.shall_fail {
-            throw!(ConsumeFailure::Error(MockError));
+            throw!(ConsumeFailure::Fault(MockFault));
         } else if self.is_empty.load(Ordering::Relaxed) {
             self.is_empty.store(false, Ordering::Relaxed);
             throw!(ConsumeFailure::EmptyStock);
@@ -53,15 +53,15 @@ impl Consumer for MockConsumer {
 }
 
 #[derive(Debug, PartialEq)]
-struct MockError;
+struct MockFault;
 
-impl Display for MockError {
+impl Display for MockFault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MockError")
+        write!(f, "MockFault")
     }
 }
 
-impl Error for MockError {}
+impl Error for MockFault {}
 
 /// If `consume` returns a good, `demand` returns it.
 #[test]
@@ -86,5 +86,5 @@ fn demand_blocks_until_good_is_found() {
 fn demand_returns_failure() {
     let consumer = MockConsumer::new(1).mock_failure();
 
-    assert_eq!(consumer.demand(), Err(MockError));
+    assert_eq!(consumer.demand(), Err(MockFault));
 }

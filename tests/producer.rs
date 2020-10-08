@@ -34,12 +34,12 @@ impl MockProducer {
 
 impl Producer for MockProducer {
     type Good = u8;
-    type Error = MockError;
+    type Fault = MockFault;
 
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, _good: Self::Good) {
         if self.will_fail {
-            throw!(ProduceFailure::Error(MockError));
+            throw!(ProduceFailure::Fault(MockFault));
         } else if self.is_full.load(Ordering::Relaxed) {
             self.is_full.store(false, Ordering::Relaxed);
             throw!(ProduceFailure::FullStock);
@@ -48,15 +48,15 @@ impl Producer for MockProducer {
 }
 
 #[derive(Debug, PartialEq)]
-struct MockError;
+struct MockFault;
 
-impl Display for MockError {
+impl Display for MockFault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MockError")
+        write!(f, "MockFault")
     }
 }
 
-impl Error for MockError {}
+impl Error for MockFault {}
 
 /// If `produce` succeeds, `produce_or_recall` also succeeds.
 #[test]
@@ -100,5 +100,5 @@ fn force_fails() {
     const GOOD: u8 = 3;
     let producer = MockProducer::new().mock_failure();
 
-    assert_eq!(producer.force(GOOD), Err(MockError));
+    assert_eq!(producer.force(GOOD), Err(MockFault));
 }

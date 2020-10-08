@@ -79,14 +79,14 @@ impl<I, O, E> Process<I, O, E> {
 
 impl<I, O, E> Consumer for Process<I, O, E>
 where
-    O: AssembleFrom<u8> + Display,
+    O: AssembleFrom<u8> + Debug + Display + 'static,
     <O as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Error = <Reader<O> as Consumer>::Error;
+    type Fault = <Reader<O> as Consumer>::Fault;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
         self.output.consume()?
     }
@@ -98,10 +98,10 @@ where
     <I as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
-    type Error = <Writer<I> as Producer>::Error;
+    type Fault = <Writer<I> as Producer>::Fault;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, good: Self::Good) {
         self.input.produce(good)?
     }
@@ -120,10 +120,10 @@ pub struct Waiter {
 
 impl Consumer for Waiter {
     type Good = ExitStatus;
-    type Error = WaitProcessError;
+    type Fault = WaitProcessError;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
         if let Some(status) =
             self.child

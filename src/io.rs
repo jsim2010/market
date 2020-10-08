@@ -3,8 +3,7 @@ use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
         thread::{Thread, Void},
-        ClosedMarketError, ConsumeCompositeError, ConsumeFailure, Consumer, ProduceFailure,
-        Producer,
+        ClosedMarketFault, ConsumeFailure, Consumer, ProduceFailure, Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
@@ -51,26 +50,52 @@ impl<G> Reader<G> {
 
 impl<G> Consumer for Reader<G>
 where
-    G: AssembleFrom<u8>,
+    G: AssembleFrom<u8> + Debug + 'static,
     <G as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
-    // ClosedMarketError is prefered to the equivalent and more general <ByteConsumer as Consumer>::Error in order to keep ByteConsumer private.
-    type Error = ConsumeCompositeError<<G as AssembleFrom<u8>>::Error, ClosedMarketError>;
+    // ClosedMarketFault is prefered to the equivalent and more general <ByteConsumer as Consumer>::Error in order to keep ByteConsumer private.
+    type Fault = ReadError<G>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
         let mut bytes = self
             .byte_consumer
             .consume_all()
-            .map_err(Self::Error::Consume)?;
+            .map_err(|_| Self::Fault::Closed)?;
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
             AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
-            AssembleFailure::Error(e) => ConsumeFailure::Error(ConsumeCompositeError::Compose(e)),
+            AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadError::Assemble(e)),
         })?
+    }
+}
+
+/// An error while reading a good of type `G`.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadError<G>
+where
+    G: AssembleFrom<u8> + Debug,
+    <G as AssembleFrom<u8>>::Error: 'static,
+{
+    /// Unable to assemble the good from bytes.
+    #[error("{0}")]
+    // This cannot be #[from] as it conflicts with From<T> for T
+    Assemble(#[source] <G as AssembleFrom<u8>>::Error),
+    /// Reader was closed.
+    #[error("reader was closed")]
+    Closed,
+}
+
+impl<G> From<ClosedMarketFault> for ReadError<G>
+where
+    G: AssembleFrom<u8> + Debug,
+{
+    #[inline]
+    fn from(_: ClosedMarketFault) -> Self {
+        Self::Closed
     }
 }
 
@@ -104,14 +129,14 @@ where
     <G as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = G;
-    // ClosedMarketError is equivalent to <ByteProducer as Producer>::Error. ClosedMarketError is prefered in order to keep ByteProducer private.
-    type Error = WriteError<G>;
+    // ClosedMarketFault is equivalent to <ByteProducer as Producer>::Error. ClosedMarketFault is prefered in order to keep ByteProducer private.
+    type Fault = WriteError<G>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, good: Self::Good) {
         self.byte_producer
-            .produce_all(good.disassemble_into().map_err(Self::Error::Disassemble)?)
+            .produce_all(good.disassemble_into().map_err(Self::Fault::Disassemble)?)
             .map_err(ProduceFailure::map_into)?
     }
 }
@@ -132,12 +157,12 @@ where
     Closed,
 }
 
-impl<G> From<ClosedMarketError> for WriteError<G>
+impl<G> From<ClosedMarketFault> for WriteError<G>
 where
     G: DisassembleInto<u8> + Debug,
 {
     #[inline]
-    fn from(_: ClosedMarketError) -> Self {
+    fn from(_: ClosedMarketFault) -> Self {
         Self::Closed
     }
 }
@@ -193,10 +218,10 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Error = ClosedMarketError;
+    type Fault = ClosedMarketFault;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Error>)]
+    #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
@@ -225,7 +250,7 @@ struct ByteProducer {
     /// If `Self` is currently being dropped.
     is_dropping: Arc<AtomicBool>,
     /// The thread.
-    thread: Thread<Void>,
+    thread: Thread<Void, ClosedMarketFault>,
 }
 
 impl ByteProducer {
@@ -284,7 +309,7 @@ impl ByteProducer {
                 }
             }
 
-            Void
+            Ok(Void)
         });
 
         Self {
@@ -309,10 +334,10 @@ impl Drop for ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Error = ClosedMarketError;
+    type Fault = ClosedMarketFault;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Error>)]
+    #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
