@@ -24,7 +24,7 @@ pub use {
 use {
     core::{
         convert::TryInto,
-        fmt::{self, Debug, Display},
+        fmt::{self, Debug},
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_queue::SegQueue,
@@ -123,7 +123,7 @@ pub trait Producer {
     fn produce_or_recall(&self, good: Self::Good)
     where
         // Debug and Dislay bounds required by Recall.
-        Self::Good: Clone + Debug + Display,
+        Self::Good: Clone + Debug,
     {
         self.produce(good.clone())
             .map_err(|failure| Recall::new(good, failure))?
@@ -144,7 +144,7 @@ pub trait Producer {
     #[throws(Self::Fault)]
     fn force(&self, mut good: Self::Good)
     where
-        Self::Good: Clone + Debug + Display,
+        Self::Good: Clone + Debug,
         Self::Fault: 'static,
     {
         loop {
@@ -163,7 +163,7 @@ pub trait Producer {
     #[throws(Self::Fault)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
-        Self::Good: Clone + Debug + Display,
+        Self::Good: Clone + Debug,
         Self::Fault: 'static,
     {
         for good in goods {
@@ -413,7 +413,7 @@ impl<G> Default for UnlimitedQueue<G> {
 
 impl<G> Producer for UnlimitedQueue<G>
 where
-    G: Debug + Display,
+    G: Debug,
 {
     type Good = G;
     type Fault = ClosedMarketFault;
@@ -463,7 +463,7 @@ where
 
 impl<G> Producer for PermanentQueue<G>
 where
-    G: Debug + Display,
+    G: Debug,
 {
     type Good = G;
     type Fault = Never;

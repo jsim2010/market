@@ -4,46 +4,63 @@ use {
         channel::{CrossbeamConsumer, CrossbeamProducer},
         ConsumeFailure, Consumer, Producer,
     },
-    core::fmt::{Debug, Display},
+    core::fmt::Debug,
     fehler::{throw, throws},
+    log::error,
     parse_display::Display as ParseDisplay,
-    std::{error::Error, thread},
+    std::{
+        any::Any,
+        error::Error,
+        panic::{self, UnwindSafe},
+        thread::{self, JoinHandle},
+    },
     thiserror::Error as ThisError,
 };
 
+/// The type returned by a panic.
+type Panic = Box<dyn Any + Send + 'static>;
+
 /// A wrapper around the `std::thread` functionality.
+///
+/// Consumption replaces the functionality of `join`.
 #[derive(Debug)]
-pub struct Thread<O, E>
+pub struct Thread<T, E>
 where
     E: Debug,
-    O: Debug,
+    T: Debug,
 {
-    /// Consumes the output of the thread.
-    consumer: CrossbeamConsumer<Output<O, E>>,
+    /// Consumes the outcome of the thread.
+    consumer: CrossbeamConsumer<Outcome<T, E>>,
+    /// The handle to the thread.
+    handle: JoinHandle<()>,
 }
 
-impl<O, E> Thread<O, E>
+impl<T, E> Thread<T, E>
 where
-    E: Clone + Debug + Display + Send + 'static,
-    O: Clone + Debug + Display + Send + 'static,
+    E: Clone + Debug + Send + 'static,
+    T: Clone + Debug + Send + 'static,
 {
-    /// Creates a new `Thread`.
-    #[allow(unused_results)] // JoinHandle is not used.
+    /// Creates a new `Thread` and spawns `call`.
     #[inline]
-    pub fn new<F>(thread: F) -> Self
+    pub fn new<F>(call: F) -> Self
     where
-        F: FnOnce() -> Result<O, E> + Send + 'static,
+        F: FnOnce() -> Result<T, E> + Send + UnwindSafe + 'static,
     {
         let (tx, rx) = crossbeam_channel::bounded(1);
 
-        thread::spawn(move || {
-            #[allow(clippy::expect_used)] // Nothing can be done if production fails.
-            CrossbeamProducer::from(tx)
-                .force(Output::from((thread)()))
-                .expect("unable to send thread result");
-        });
-
         Self {
+            handle: thread::spawn(move || {
+                // Although force is preferable to produce, force requires the good impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
+                if let Err(fault) = CrossbeamProducer::from(tx)
+                    .produce(Outcome::from(panic::catch_unwind(|| (call)())))
+                {
+                    error!(
+                        "Failed to send outcome of `{}` thread: {}",
+                        thread::current().name().unwrap_or("{unnamed}"),
+                        fault
+                    );
+                }
+            }),
             consumer: rx.into(),
         }
     }
@@ -55,47 +72,57 @@ where
     O: Debug,
 {
     type Good = O;
-    type Fault = ConsumeThreadError<E>;
+    type Fault = Fault<E>;
 
     #[throws(ConsumeFailure<Self::Fault>)]
     #[inline]
     fn consume(&self) -> Self::Good {
         match self.consumer.consume() {
             Ok(output) => match output {
-                Output::Success(success) => success,
-                Output::Error(error) => throw!(ConsumeThreadError::Error(error)),
+                Outcome::Success(success) => success,
+                Outcome::Error(error) => throw!(Fault::Error(error)),
+                #[allow(clippy::panic)]
+                // Propogating the panic that occurred in call provided by third-party.
+                Outcome::Panic(panic) => panic!(panic),
             },
-            Err(_) => throw!(ConsumeThreadError::Dropped),
+            Err(failure) => match failure {
+                ConsumeFailure::EmptyStock => throw!(ConsumeFailure::EmptyStock),
+                ConsumeFailure::Fault(_) => throw!(Fault::Dropped),
+            },
         }
     }
 }
 
-/// A proxy for Result that implements Display.
-#[derive(Clone, Debug, ParseDisplay)]
-pub enum Output<O, E> {
-    /// The thread returned an output.
+/// A `Result` with the additional possibility of a caught panic.
+#[derive(Debug, ParseDisplay)]
+enum Outcome<T, E> {
+    /// The thread call completed sucessfully.
     #[display("{0}")]
-    Success(O),
-    /// An thread threw an error.
+    Success(T),
+    /// The thread call threw an error.
     #[display("ERROR: {0}")]
     Error(E),
+    /// The thread call panicked.
+    #[display("PANIC")]
+    Panic(Panic),
 }
 
-impl<O, E> From<Result<O, E>> for Output<O, E> {
+impl<T, E> From<Result<Result<T, E>, Panic>> for Outcome<T, E> {
     #[inline]
-    fn from(result: Result<O, E>) -> Self {
+    fn from(result: Result<Result<T, E>, Panic>) -> Self {
         match result {
-            Ok(success) => Self::Success(success),
-            Err(error) => Self::Error(error),
+            Ok(Ok(success)) => Self::Success(success),
+            Ok(Err(error)) => Self::Error(error),
+            Err(panic) => Self::Panic(panic),
         }
     }
 }
 
-/// An error while consuming thread output.
+/// An error while consuming the outcome of a thread.
 #[derive(Debug, ThisError)]
-pub enum ConsumeThreadError<E>
+pub enum Fault<E>
 where
-    E: Debug + Display + Error + 'static,
+    E: Debug + Error + 'static,
 {
     /// The thread was dropped.
     #[error("thread was dropped before output could be consumed")]
@@ -104,8 +131,3 @@ where
     #[error(transparent)]
     Error(E),
 }
-
-/// A proxy for () that implements Display.
-#[derive(Clone, Debug, ParseDisplay)]
-#[display("")]
-pub(crate) struct Void;

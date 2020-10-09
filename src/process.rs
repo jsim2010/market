@@ -5,10 +5,7 @@ use {
         ConsumeFailure, Consumer, ProduceFailure, Producer,
     },
     conventus::{AssembleFrom, DisassembleInto},
-    core::{
-        cell::RefCell,
-        fmt::{Debug, Display},
-    },
+    core::{cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
     std::{
         io,
@@ -79,7 +76,7 @@ impl<I, O, E> Process<I, O, E> {
 
 impl<I, O, E> Consumer for Process<I, O, E>
 where
-    O: AssembleFrom<u8> + Debug + Display + 'static,
+    O: AssembleFrom<u8> + Debug + 'static,
     <O as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
@@ -94,7 +91,7 @@ where
 
 impl<I, O, E> Producer for Process<I, O, E>
 where
-    I: DisassembleInto<u8> + Debug + Display,
+    I: DisassembleInto<u8> + Debug,
     <I as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;

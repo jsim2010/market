@@ -5,7 +5,7 @@
 //! 2) Faults: These indicate that the market is currently in a state that no attempted action will be successful until the state is changed (if possible).
 use {
     conventus::AssembleFailure,
-    core::fmt::{Debug, Display},
+    core::fmt::Debug,
     fehler::{throw, throws},
     std::error::Error,
     thiserror::Error as ThisError,
@@ -116,10 +116,10 @@ where
 
 /// Returns a good that a `Producer` failed to produce.
 #[derive(Debug, Eq, Hash, PartialEq, ThisError)]
-#[error("failed to produce good `{good}`: {failure}")]
+#[error("")]
 pub struct Recall<G, T>
 where
-    G: Debug + Display,
+    G: Debug,
     T: Error + 'static,
 {
     /// The good that was not produced.
@@ -130,7 +130,7 @@ where
 
 impl<G, T> Recall<G, T>
 where
-    G: Debug + Display,
+    G: Debug,
     T: Error,
 {
     /// Creates a new [`Recall`].

@@ -2,13 +2,13 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        thread::{Thread, Void},
+        thread::Thread,
         ClosedMarketFault, ConsumeFailure, Consumer, ProduceFailure, Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
         cell::RefCell,
-        fmt::{Debug, Display},
+        fmt::Debug,
         marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
@@ -17,6 +17,7 @@ use {
     log::{error, warn},
     std::{
         io::{self, ErrorKind, Read, Write},
+        panic::UnwindSafe,
         sync::Arc,
         thread::{self, JoinHandle},
     },
@@ -114,7 +115,7 @@ impl<G> Writer<G> {
     #[inline]
     pub fn new<W>(writer: W) -> Self
     where
-        W: Write + Send + 'static,
+        W: Write + Send + UnwindSafe + 'static,
     {
         Self {
             byte_producer: ByteProducer::new(writer),
@@ -125,7 +126,7 @@ impl<G> Writer<G> {
 
 impl<G> Producer for Writer<G>
 where
-    G: DisassembleInto<u8> + Debug + Display,
+    G: DisassembleInto<u8> + Debug,
     <G as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = G;
@@ -250,7 +251,7 @@ struct ByteProducer {
     /// If `Self` is currently being dropped.
     is_dropping: Arc<AtomicBool>,
     /// The thread.
-    thread: Thread<Void, ClosedMarketFault>,
+    thread: Thread<(), ClosedMarketFault>,
 }
 
 impl ByteProducer {
@@ -258,7 +259,7 @@ impl ByteProducer {
     #[inline]
     fn new<W>(mut writer: W) -> Self
     where
-        W: Write + Send + 'static,
+        W: Write + Send + UnwindSafe + 'static,
     {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (err_tx, err_rx) = crossbeam_channel::bounded(1);
@@ -309,7 +310,7 @@ impl ByteProducer {
                 }
             }
 
-            Ok(Void)
+            Ok(())
         });
 
         Self {
