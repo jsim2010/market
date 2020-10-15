@@ -369,7 +369,8 @@ impl<G> UnlimitedQueue<G> {
     /// Closes `self`.
     #[inline]
     pub fn close(&self) {
-        self.closure.trigger();
+        #[allow(clippy::expect_used)] // Trigger::produce() will not fail.
+        self.closure.produce(()).expect("triggering closure");
     }
 }
 
@@ -385,7 +386,7 @@ where
     fn consume(&self) -> Self::Good {
         if let Some(good) = self.queue.pop() {
             good
-        } else if self.closure.is_triggered() {
+        } else if self.closure.consume().is_ok() {
             throw!(ConsumeFailure::Fault(ClosedMarketFault));
         } else {
             throw!(ConsumeFailure::EmptyStock);
@@ -413,7 +414,7 @@ where
     #[inline]
     #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, good: Self::Good) {
-        if self.closure.is_triggered() {
+        if self.closure.consume().is_ok() {
             throw!(ProduceFailure::Fault(ClosedMarketFault));
         } else {
             self.queue.push(good);

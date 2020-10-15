@@ -1,11 +1,9 @@
 //! Implements synchronization items.
 use {
-    crate::channel::{StdConsumer, StdProducer},
     core::sync::atomic::{AtomicBool, Ordering},
-    std::sync::mpsc,
+    fehler::{throw, throws},
 };
 
-// TODO: Adapt trigger so that it is a Consumer and Producer. Potentially requires adapting Consumer and Producer so that it does not have a good.
 /// Sends a status that can be activated but not deactivated.
 #[derive(Debug)]
 pub struct Trigger {
@@ -22,31 +20,28 @@ impl Trigger {
             is_activated: AtomicBool::new(false),
         }
     }
+}
 
-    /// Triggers `self`.
+impl crate::Consumer for Trigger {
+    type Good = ();
+    type Fault = never::Never;
+
     #[inline]
-    pub fn trigger(&self) {
+    #[throws(crate::ConsumeFailure<Self::Fault>)]
+    fn consume(&self) -> Self::Good {
+        if !self.is_activated.load(Ordering::Relaxed) {
+            throw!(crate::ConsumeFailure::EmptyStock)
+        }
+    }
+}
+
+impl crate::Producer for Trigger {
+    type Good = ();
+    type Fault = never::Never;
+
+    #[inline]
+    #[throws(crate::ProduceFailure<Self::Fault>)]
+    fn produce(&self, _good: Self::Good) {
         self.is_activated.store(true, Ordering::Relaxed);
     }
-
-    /// Returns if `self` has been triggered.
-    #[inline]
-    pub fn is_triggered(&self) -> bool {
-        self.is_activated.load(Ordering::Relaxed)
-    }
 }
-
-/// Creates the items that implement a trigger for synchronizing threads.
-// TODO: Remove trigger on next release.
-#[deprecated]
-#[must_use]
-#[inline]
-pub fn trigger() -> (Actuator, Releaser) {
-    let (actuator, releaser) = mpsc::channel();
-    (actuator.into(), releaser.into())
-}
-
-/// The Producer of a trigger.
-pub type Actuator = StdProducer<()>;
-/// The Consumer of a trigger.
-pub type Releaser = StdConsumer<()>;
