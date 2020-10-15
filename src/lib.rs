@@ -22,15 +22,10 @@ pub use {
 };
 
 use {
-    core::{
-        convert::TryInto,
-        fmt::{self, Debug},
-        sync::atomic::{AtomicBool, Ordering},
-    },
+    core::fmt::Debug,
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
-    map::{Adapter, Converter},
-    std::{error::Error, rc::Rc},
+    std::error::Error,
 };
 
 /// Retrieves goods from a market.
@@ -194,13 +189,13 @@ where
 
     /// Adds `consumer` to the end of the [`Consumer`]s held by `self`.
     #[inline]
-    pub fn push<C>(&mut self, consumer: Rc<C>)
+    pub fn push<C>(&mut self, consumer: std::rc::Rc<C>)
     where
         C: Consumer + 'static,
         G: From<C::Good> + 'static,
         T: From<C::Fault> + Error + 'static,
     {
-        self.consumers.push(Box::new(Adapter::new(consumer)));
+        self.consumers.push(Box::new(map::Adapter::new(consumer)));
     }
 }
 
@@ -231,7 +226,7 @@ where
 
 impl<G, E> Debug for Collector<G, E> {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Collector {{ .. }}")
     }
 }
@@ -255,19 +250,19 @@ where
 
     /// Adds `producer` to the end of the [`Producers`]s held by `self`.
     #[inline]
-    pub fn push<P>(&mut self, producer: Rc<P>)
+    pub fn push<P>(&mut self, producer: std::rc::Rc<P>)
     where
         P: Producer + 'static,
-        G: TryInto<P::Good> + 'static,
+        G: core::convert::TryInto<P::Good> + 'static,
         T: From<P::Fault> + Error + 'static,
     {
-        self.producers.push(Box::new(Converter::new(producer)));
+        self.producers.push(Box::new(map::Converter::new(producer)));
     }
 }
 
 impl<G, T> Debug for Distributor<G, T> {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "Distributor {{ .. }}")
     }
 }
@@ -359,8 +354,8 @@ where
 pub struct UnlimitedQueue<G> {
     /// The queue.
     queue: SegQueue<G>,
-    /// If the queue is closed.
-    is_closed: AtomicBool,
+    /// A trigger to close the queue.
+    closure: sync::Trigger,
 }
 
 impl<G> UnlimitedQueue<G> {
@@ -374,7 +369,7 @@ impl<G> UnlimitedQueue<G> {
     /// Closes `self`.
     #[inline]
     pub fn close(&self) {
-        self.is_closed.store(true, Ordering::Relaxed);
+        self.closure.trigger();
     }
 }
 
@@ -388,15 +383,12 @@ where
     #[inline]
     #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
-        match self.queue.pop() {
-            Ok(good) => good,
-            Err(_) => {
-                if self.is_closed.load(Ordering::Relaxed) {
-                    throw!(ConsumeFailure::Fault(ClosedMarketFault));
-                } else {
-                    throw!(ConsumeFailure::EmptyStock);
-                }
-            }
+        if let Some(good) = self.queue.pop() {
+            good
+        } else if self.closure.is_triggered() {
+            throw!(ConsumeFailure::Fault(ClosedMarketFault));
+        } else {
+            throw!(ConsumeFailure::EmptyStock);
         }
     }
 }
@@ -406,7 +398,7 @@ impl<G> Default for UnlimitedQueue<G> {
     fn default() -> Self {
         Self {
             queue: SegQueue::new(),
-            is_closed: AtomicBool::new(false),
+            closure: sync::Trigger::new(),
         }
     }
 }
@@ -421,7 +413,7 @@ where
     #[inline]
     #[throws(ProduceFailure<Self::Fault>)]
     fn produce(&self, good: Self::Good) {
-        if self.is_closed.load(Ordering::Relaxed) {
+        if self.closure.is_triggered() {
             throw!(ProduceFailure::Fault(ClosedMarketFault));
         } else {
             self.queue.push(good);
@@ -457,7 +449,11 @@ where
     #[inline]
     #[throws(ConsumeFailure<Self::Fault>)]
     fn consume(&self) -> Self::Good {
-        self.queue.pop().map_err(|_| ConsumeFailure::EmptyStock)?
+        if let Some(good) = self.queue.pop() {
+            good
+        } else {
+            throw!(ConsumeFailure::EmptyStock)
+        }
     }
 }
 
