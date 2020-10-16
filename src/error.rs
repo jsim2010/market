@@ -156,3 +156,16 @@ where
 #[derive(Clone, Copy, Debug, ThisError)]
 #[error("market is closed")]
 pub struct ClosedMarketFault;
+
+impl core::convert::TryFrom<ConsumeFailure<ClosedMarketFault>> for ClosedMarketFault {
+    type Error = ();
+
+    #[throws(Self::Error)]
+    fn try_from(failure: ConsumeFailure<ClosedMarketFault>) -> Self {
+        if let ConsumeFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
+}

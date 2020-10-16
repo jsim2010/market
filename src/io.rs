@@ -13,7 +13,7 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     crossbeam_channel::TryRecvError,
-    fehler::throws,
+    fehler::{throw, throws},
     log::{error, warn},
     std::{
         io::{self, ErrorKind, Read, Write},
@@ -22,6 +22,38 @@ use {
         thread::{self, JoinHandle},
     },
 };
+
+/// A fault while reading a good of type `G`.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadFault<G>
+where
+    G: AssembleFrom<u8> + Debug,
+    <G as AssembleFrom<u8>>::Error: 'static,
+{
+    /// Unable to assemble the good from bytes.
+    #[error("{0}")]
+    // This cannot be #[from] as it conflicts with From<T> for T
+    Assemble(#[source] <G as AssembleFrom<u8>>::Error),
+    /// Reader was closed.
+    #[error("reader was closed")]
+    Closed,
+}
+
+impl<G> core::convert::TryFrom<ConsumeFailure<ReadFault<G>>> for ReadFault<G>
+where
+    G: AssembleFrom<u8> + Debug,
+{
+    type Error = ();
+
+    #[throws(Self::Error)]
+    fn try_from(failure: ConsumeFailure<ReadFault<G>>) -> Self {
+        if let ConsumeFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
+}
 
 /// Consumes goods of type `G` from bytes read by an item implementing `std::io::Read`.
 #[derive(Debug)]
@@ -56,20 +88,20 @@ where
 {
     type Good = G;
     // ClosedMarketFault is prefered to the equivalent and more general <ByteConsumer as Consumer>::Error in order to keep ByteConsumer private.
-    type Fault = ReadError<G>;
+    type Structure = crate::ClassicConsumer<ReadFault<G>>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         let mut bytes = self
             .byte_consumer
             .consume_all()
-            .map_err(|_| Self::Fault::Closed)?;
+            .map_err(|_| ReadFault::Closed)?;
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
             AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
-            AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadError::Assemble(e)),
+            AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadFault::Assemble(e)),
         })?
     }
 }
@@ -219,10 +251,10 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Fault = ClosedMarketFault;
+    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }

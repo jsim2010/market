@@ -22,11 +22,67 @@ pub use {
 };
 
 use {
-    core::fmt::Debug,
+    core::{convert::TryFrom, fmt::Debug},
     crossbeam_queue::SegQueue,
     fehler::{throw, throws},
     std::error::Error,
 };
+
+pub trait ConsumerStructure {
+    type Failure;
+    type Fault: core::convert::TryFrom<Self::Failure>;
+}
+
+pub enum ClassicConsumeFailure {
+    EmptyStock,
+    ClosedMarket,
+}
+
+impl core::convert::TryFrom<ClassicConsumeFailure> for ClosedMarketFault {
+    type Error = ();
+
+    #[throws(Self::Error)]
+    fn try_from(failure: ClassicConsumeFailure) -> Self {
+        if let ClassicConsumeFailure::ClosedMarket = failure {
+            Self
+        } else {
+            throw!(())
+        }
+    }
+}
+
+pub struct ClassicConsumer<T> {
+    fault: core::marker::PhantomData<T>,
+}
+
+impl<T> ConsumerStructure for ClassicConsumer<T>
+where
+    T: core::convert::TryFrom<ConsumeFailure<T>> + Error + 'static,
+{
+    type Failure = ConsumeFailure<T>;
+    type Fault = T;
+}
+
+pub struct EmptyStockFailure;
+
+impl core::convert::TryFrom<EmptyStockFailure> for core::convert::Infallible {
+    type Error = ();
+
+    #[throws(Self::Error)]
+    fn try_from(_failure: EmptyStockFailure) -> Self {
+        throw!(());
+    }
+}
+
+pub struct PermanentConsumer;
+
+impl ConsumerStructure for PermanentConsumer {
+    type Failure = EmptyStockFailure;
+    type Fault = core::convert::Infallible;
+}
+
+pub type ConsumerFault<T> = <<T as Consumer>::Structure as ConsumerStructure>::Fault;
+pub type ConsumerFailure<T> = <<T as Consumer>::Structure as ConsumerStructure>::Failure;
 
 /// Retrieves goods from a market.
 ///
@@ -34,8 +90,8 @@ use {
 pub trait Consumer {
     /// The item being consumed.
     type Good;
-    /// The fault that could be thrown during consumption.
-    type Fault: Error + 'static;
+    /// Describes the structure of `Self`.
+    type Structure: ConsumerStructure;
 
     /// Retrieves the next good from the market without blocking.
     ///
@@ -43,16 +99,16 @@ pub trait Consumer {
     ///
     /// 1. `consume` returns without blocking the current process.
     /// 2. If at least one good is in stock, `consume` returns one of those goods.
-    /// 3. If fault `T` is thrown during consumption, `consume` throws `ConsumeFailure::Fault(T)`.
-    /// 4. If there are no goods in stock, `consume` throws `ConsumeFailure::EmptyStock`.
-    #[throws(ConsumeFailure<Self::Fault>)]
+    /// 3. If fault `T` is thrown during consumption, `consume` throws failure `F` such that `ConsumerFault::<Self>::try_from(F)` returns `Ok(T)`.
+    /// 4. If there are no goods in stock, `consume` throws its appropriate empty stock failure.
+    #[throws(ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good;
 
     /// Retrieves all goods held in the market without blocking.
     ///
-    /// If the stock of the market is empty, an empty list is returned. If a fault is thrown after consuming 1 or more goods, the consumption stops and the fault is ignored.
+    /// If the stock of the market is empty, an empty list is returned. If a fault is thrown after consuming 1 or more goods, the fault is ignored and the current list of goods is returned.
     #[inline]
-    #[throws(Self::Fault)]
+    #[throws(ConsumerFault<Self>)]
     fn consume_all(&self) -> Vec<Self::Good> {
         let mut goods = Vec::new();
 
@@ -62,7 +118,7 @@ pub trait Consumer {
                     goods.push(good);
                 }
                 Err(failure) => {
-                    if let ConsumeFailure::Fault(fault) = failure {
+                    if let Ok(fault) = ConsumerFault::<Self>::try_from(failure) {
                         if goods.is_empty() {
                             throw!(fault)
                         }
@@ -76,7 +132,7 @@ pub trait Consumer {
 
     /// Retrieves the next good from the market, blocking until one is available.
     #[inline]
-    #[throws(Self::Fault)]
+    #[throws(ConsumerFault<Self>)]
     fn demand(&self) -> Self::Good {
         loop {
             match self.consume() {
@@ -84,7 +140,7 @@ pub trait Consumer {
                     break good;
                 }
                 Err(failure) => {
-                    if let ConsumeFailure::Fault(fault) = failure {
+                    if let Ok(fault) = ConsumerFault::<Self>::try_from(failure) {
                         throw!(fault);
                     }
                 }
@@ -171,7 +227,7 @@ pub trait Producer {
 #[derive(Default)]
 pub struct Collector<G, T> {
     /// The [`Consumer`]s.
-    consumers: Vec<Box<dyn Consumer<Good = G, Fault = T>>>,
+    consumers: Vec<Box<dyn Consumer<Good = G, Structure = ClassicConsumer<T>>>>,
 }
 
 impl<G, T> Collector<G, T>
@@ -191,9 +247,9 @@ where
     #[inline]
     pub fn push<C>(&mut self, consumer: std::rc::Rc<C>)
     where
-        C: Consumer + 'static,
+        C: Consumer<Structure = ClassicConsumer<T>> + 'static,
         G: From<C::Good> + 'static,
-        T: From<C::Fault> + Error + 'static,
+        T: From<ConsumerFault<C>> + core::convert::TryFrom<ConsumeFailure<T>> + Error + 'static,
     {
         self.consumers.push(Box::new(map::Adapter::new(consumer)));
     }
@@ -201,13 +257,13 @@ where
 
 impl<G, T> Consumer for Collector<G, T>
 where
-    T: Error + 'static,
+    T: core::convert::TryFrom<ConsumeFailure<T>> + Error + 'static,
 {
     type Good = G;
-    type Fault = T;
+    type Structure = ClassicConsumer<T>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         let mut result = Err(ConsumeFailure::EmptyStock);
 
@@ -293,60 +349,6 @@ where
     }
 }
 
-/// Inspects if goods meet defined requirements.
-pub trait Inspector {
-    /// The good to be inspected.
-    type Good;
-
-    /// Returns if `good` meets requirements.
-    fn allows(&self, good: &Self::Good) -> bool;
-}
-
-/// Consumes goods that an [`Inspector`] has allowed.
-#[derive(Debug)]
-pub struct VigilantConsumer<C, I> {
-    /// The consumer.
-    consumer: C,
-    /// The inspector.
-    inspector: I,
-}
-
-impl<C, I> VigilantConsumer<C, I> {
-    /// Creates a new [`VigilantConsumer`].
-    #[inline]
-    pub const fn new(consumer: C, inspector: I) -> Self {
-        Self {
-            consumer,
-            inspector,
-        }
-    }
-}
-
-impl<C, I> Consumer for VigilantConsumer<C, I>
-where
-    C: Consumer,
-    I: Inspector<Good = <C as Consumer>::Good> + Debug,
-{
-    type Good = <C as Consumer>::Good;
-    type Fault = <C as Consumer>::Fault;
-
-    #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
-    fn consume(&self) -> Self::Good {
-        let mut input;
-
-        loop {
-            input = self.consumer.consume()?;
-
-            if self.inspector.allows(&input) {
-                break;
-            }
-        }
-
-        input
-    }
-}
-
 /// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
 ///
 /// An [`UnlimitedQueue`] can be closed, which prevents the [`Producer`] from producing new goods while allowing the [`Consumer`] to consume only the remaining goods on the queue.
@@ -379,10 +381,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Structure = ClassicConsumer<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         if let Some(good) = self.queue.pop() {
             good
@@ -445,15 +447,15 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = Never;
+    type Structure = PermanentConsumer;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         if let Some(good) = self.queue.pop() {
             good
         } else {
-            throw!(ConsumeFailure::EmptyStock)
+            throw!(EmptyStockFailure)
         }
     }
 }

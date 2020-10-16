@@ -80,10 +80,10 @@ where
     <O as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Fault = <Reader<O> as Consumer>::Fault;
+    type Structure = crate::ClassicConsumer<crate::io::ReadFault<O>>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         self.output.consume()?
     }
@@ -117,16 +117,16 @@ pub struct Waiter {
 
 impl Consumer for Waiter {
     type Good = ExitStatus;
-    type Fault = WaitProcessError;
+    type Structure = crate::ClassicConsumer<WaitFault>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         if let Some(status) =
             self.child
                 .borrow_mut()
                 .try_wait()
-                .map_err(|error| WaitProcessError {
+                .map_err(|error| WaitFault {
                     command: self.command.clone(),
                     error,
                 })?
@@ -180,9 +180,22 @@ pub struct UncapturedStdioError(String);
 /// An error waiting for a `Process` to exit.
 #[derive(Debug, ThisError)]
 #[error("Failed to wait for `{command}`: {error}")]
-pub struct WaitProcessError {
+pub struct WaitFault {
     /// The command of the process.
     command: String,
     /// The error.
     error: io::Error,
+}
+
+impl core::convert::TryFrom<ConsumeFailure<WaitFault>> for WaitFault {
+    type Error = ();
+
+    #[throws(Self::Error)]
+    fn try_from(failure: ConsumeFailure<WaitFault>) -> Self {
+        if let ConsumeFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
 }

@@ -21,10 +21,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }
@@ -102,10 +102,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }

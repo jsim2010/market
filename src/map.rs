@@ -13,7 +13,7 @@ pub(crate) struct Adapter<C, G, T> {
     consumer: Rc<C>,
     /// The desired type of `Self::Good`.
     good: PhantomData<G>,
-    /// The desired type of `Self::Fault`.
+    /// The desired type of `ConsumerFault<Self>`.
     fault: PhantomData<T>,
 }
 
@@ -30,20 +30,20 @@ impl<C, G, T> Adapter<C, G, T> {
 
 impl<C, G, T> Consumer for Adapter<C, G, T>
 where
-    C: Consumer,
+    C: Consumer<Structure = crate::ClassicConsumer<T>>,
     G: From<C::Good>,
-    T: From<C::Fault> + Error + 'static,
+    T: From<crate::ConsumerFault<C>> + core::convert::TryFrom<ConsumeFailure<T>> + Error + 'static,
 {
     type Good = G;
-    type Fault = T;
+    type Structure = crate::ClassicConsumer<T>;
 
     #[inline]
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     fn consume(&self) -> Self::Good {
         self.consumer
             .consume()
-            .map_err(ConsumeFailure::map_into)
-            .map(Self::Good::from)?
+            .map(Self::Good::from)
+            .map_err(ConsumeFailure::map_into)?
     }
 }
 

@@ -20,6 +20,36 @@ use {
 /// The type returned by a panic.
 type Panic = Box<dyn Any + Send + 'static>;
 
+/// An error while consuming the outcome of a thread.
+#[derive(Debug, ThisError)]
+pub enum Fault<E>
+where
+    E: Debug + Error + 'static,
+{
+    /// The thread was dropped.
+    #[error("thread was dropped before output could be consumed")]
+    Dropped,
+    /// The thread threw an error.
+    #[error(transparent)]
+    Error(E),
+}
+
+impl<E> core::convert::TryFrom<ConsumeFailure<Fault<E>>> for Fault<E>
+where
+    E: Debug + Error + 'static,
+{
+    type Error = ();
+
+    #[throws(<Self as core::convert::TryFrom<ConsumeFailure<Self>>>::Error)]
+    fn try_from(failure: ConsumeFailure<Fault<E>>) -> Self {
+        if let ConsumeFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
+}
+
 /// A wrapper around the `std::thread` functionality.
 ///
 /// Consumption replaces the functionality of `join`.
@@ -68,19 +98,19 @@ where
 
 impl<O, E> Consumer for Thread<O, E>
 where
-    E: Error + 'static,
+    E: core::convert::TryFrom<ConsumeFailure<E>> + Error + 'static,
     O: Debug,
 {
     type Good = O;
-    type Fault = Fault<E>;
+    type Structure = crate::ClassicConsumer<Fault<E>>;
 
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(crate::ConsumerFailure<Self>)]
     #[inline]
     fn consume(&self) -> Self::Good {
         match self.consumer.consume() {
             Ok(output) => match output {
                 Outcome::Success(success) => success,
-                Outcome::Error(error) => throw!(Fault::Error(error)),
+                Outcome::Error(error) => throw!(ConsumeFailure::Fault(Fault::Error(error))),
                 #[allow(clippy::panic)]
                 // Propogating the panic that occurred in call provided by third-party.
                 Outcome::Panic(panic) => panic!(panic),
@@ -116,18 +146,4 @@ impl<T, E> From<Result<Result<T, E>, Panic>> for Outcome<T, E> {
             Err(panic) => Self::Panic(panic),
         }
     }
-}
-
-/// An error while consuming the outcome of a thread.
-#[derive(Debug, ThisError)]
-pub enum Fault<E>
-where
-    E: Debug + Error + 'static,
-{
-    /// The thread was dropped.
-    #[error("thread was dropped before output could be consumed")]
-    Dropped,
-    /// The thread threw an error.
-    #[error(transparent)]
-    Error(E),
 }
