@@ -1,6 +1,6 @@
 //! Implements `Consumer` and `Producer` for various types of channels.
 use {
-    crate::{ClosedMarketFault, ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{ClosedMarketFault, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer},
     core::fmt::Debug,
     fehler::throws,
     std::sync::mpsc,
@@ -21,10 +21,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
+    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }
@@ -37,7 +37,7 @@ impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
     }
 }
 
-impl From<mpsc::TryRecvError> for ConsumeFailure<ClosedMarketFault> {
+impl From<mpsc::TryRecvError> for ClassicalConsumerFailure<ClosedMarketFault> {
     #[inline]
     fn from(value: mpsc::TryRecvError) -> Self {
         match value {
@@ -102,10 +102,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
+    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         self.rx.try_recv()?
     }
@@ -121,7 +121,7 @@ where
     }
 }
 
-impl From<crossbeam_channel::TryRecvError> for ConsumeFailure<ClosedMarketFault> {
+impl From<crossbeam_channel::TryRecvError> for ClassicalConsumerFailure<ClosedMarketFault> {
     #[inline]
     fn from(value: crossbeam_channel::TryRecvError) -> Self {
         match value {

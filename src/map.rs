@@ -1,6 +1,6 @@
 //! Implements actors that map goods and errors.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{error, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer},
     core::{convert::TryInto, marker::PhantomData},
     fehler::throws,
     std::{error::Error, rc::Rc},
@@ -30,20 +30,20 @@ impl<C, G, T> Adapter<C, G, T> {
 
 impl<C, G, T> Consumer for Adapter<C, G, T>
 where
-    C: Consumer<Structure = crate::ClassicConsumer<T>>,
+    C: Consumer<Failure = ClassicalConsumerFailure<T>>,
     G: From<C::Good>,
-    T: From<crate::ConsumerFault<C>> + core::convert::TryFrom<ConsumeFailure<T>> + Error + 'static,
+    T: From<error::ConsumerFault<C>> + core::convert::TryFrom<ClassicalConsumerFailure<T>> + Error + 'static,
 {
     type Good = G;
-    type Structure = crate::ClassicConsumer<T>;
+    type Failure = ClassicalConsumerFailure<T>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         self.consumer
             .consume()
             .map(Self::Good::from)
-            .map_err(ConsumeFailure::map_into)?
+            .map_err(ClassicalConsumerFailure::map_into)?
     }
 }
 

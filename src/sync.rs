@@ -24,13 +24,13 @@ impl Trigger {
 
 impl crate::Consumer for Trigger {
     type Good = ();
-    type Structure = crate::PermanentConsumer;
+    type Failure = crate::error::InfallibleConsumerFailure;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            throw!(crate::EmptyStockFailure)
+            throw!(crate::error::InfallibleConsumerFailure)
         }
     }
 }

@@ -4,50 +4,90 @@
 //! 1) Failures: These indicate that an action was not successful, but the state of the market is still valid.
 //! 2) Faults: These indicate that the market is currently in a state that no attempted action will be successful until the state is changed (if possible).
 use {
+    crate::Consumer,
     conventus::AssembleFailure,
-    core::fmt::Debug,
+    core::{convert::{Infallible, TryFrom}, fmt::{Display, Debug}},
     fehler::{throw, throws},
     std::error::Error,
     thiserror::Error as ThisError,
 };
 
-/// A `Consumer` failed to consume a good.
-#[derive(Debug, Eq, Hash, PartialEq, ThisError)]
-pub enum ConsumeFailure<T>
+pub trait ConsumerFailure: Sized {
+    type Fault: TryFrom<Self>;
+}
+
+impl<T> ConsumerFailure for ClassicalConsumerFailure<T>
 where
-    T: Error + 'static,
+    T: TryFrom<Self> + Error,
+{
+    type Fault = T;
+}
+
+pub struct InfallibleConsumerFailure;
+
+impl TryFrom<InfallibleConsumerFailure> for Infallible {
+    type Error = ();
+
+    fn try_from(_failure: InfallibleConsumerFailure) -> Result<Self, Self::Error> {
+        Err(())
+    }
+}
+
+impl ConsumerFailure for InfallibleConsumerFailure {
+    type Fault = Infallible;
+}
+
+pub type ConsumerFault<T> = <<T as Consumer>::Failure as ConsumerFailure>::Fault;
+
+// TODO: Rename ClassicalConsumerFailure
+// Do not derive ThisError so that ClassicalConsumerFailure can be created without requiring it impl Display.
+/// A `Consumer` failed to consume a good.
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub enum ClassicalConsumerFailure<T>
+where
+    T: Debug,
 {
     /// The stock of the market is empty.
-    #[error("stock is empty")]
     EmptyStock,
     /// A fault was thrown during consumption.
     ///
     /// Indicates the [`Consumer`] is currently in a state where it will not consume any more goods.
-    #[error(transparent)]
     Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ConsumeFailure<T>.
-impl<T> ConsumeFailure<T>
+#[allow(clippy::use_self)] // False positive for ClassicalConsumerFailure<T>.
+impl<T> ClassicalConsumerFailure<T>
 where
     T: Error,
 {
-    // This is done because From<ConsumeFailure<T>> for ConsumeFailure<U> cannot.
-    /// Converts `ConsumeFailure<T>` into `ConsumeFailure<U>`.
+    // This is done because From<ClassicalConsumerFailure<T>> for ClassicalConsumerFailure<U> cannot.
+    /// Converts `ClassicalConsumerFailure<T>` into `ClassicalConsumerFailure<U>`.
     #[inline]
-    pub fn map_into<U>(self) -> ConsumeFailure<U>
+    pub fn map_into<U>(self) -> ClassicalConsumerFailure<U>
     where
         U: Error + From<T>,
     {
         match self {
-            Self::EmptyStock => ConsumeFailure::EmptyStock,
-            Self::Fault(fault) => ConsumeFailure::Fault(fault.into()),
+            Self::EmptyStock => ClassicalConsumerFailure::EmptyStock,
+            Self::Fault(fault) => ClassicalConsumerFailure::Fault(fault.into()),
         }
     }
 }
 
-// TODO: Ideally could do From<AssembleFailure<E>> for ConsumeFailure<F> where F: From<E>. However this is overriden by From<E> for ConsumeFailure<E> since there is no way to indicate F != AssembleFailure<E>.
-impl<T> From<AssembleFailure<T>> for ConsumeFailure<T>
+impl<T> Display for ClassicalConsumerFailure<T>
+where
+    T: Debug + Display,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::EmptyStock => write!(f, "stock is empty"),
+            Self::Fault(fault) => write!(f, "{}", fault),
+        }
+    }
+}
+
+// TODO: Ideally could do From<AssembleFailure<E>> for ClassicalConsumerFailure<F> where F: From<E>. However this is overriden by From<E> for ClassicalConsumerFailure<E> since there is no way to indicate F != AssembleFailure<E>.
+impl<T> From<AssembleFailure<T>> for ClassicalConsumerFailure<T>
 where
     T: Error,
 {
@@ -60,7 +100,7 @@ where
     }
 }
 
-impl<T> From<T> for ConsumeFailure<T>
+impl<T> From<T> for ClassicalConsumerFailure<T>
 where
     T: Error,
 {
@@ -157,12 +197,12 @@ where
 #[error("market is closed")]
 pub struct ClosedMarketFault;
 
-impl core::convert::TryFrom<ConsumeFailure<ClosedMarketFault>> for ClosedMarketFault {
+impl core::convert::TryFrom<ClassicalConsumerFailure<ClosedMarketFault>> for ClosedMarketFault {
     type Error = ();
 
     #[throws(Self::Error)]
-    fn try_from(failure: ConsumeFailure<ClosedMarketFault>) -> Self {
-        if let ConsumeFailure::Fault(fault) = failure {
+    fn try_from(failure: ClassicalConsumerFailure<ClosedMarketFault>) -> Self {
+        if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

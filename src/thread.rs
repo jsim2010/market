@@ -2,7 +2,7 @@
 use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
-        ConsumeFailure, Consumer, Producer,
+        ClassicalConsumerFailure, Consumer, Producer,
     },
     core::fmt::Debug,
     fehler::{throw, throws},
@@ -34,15 +34,15 @@ where
     Error(E),
 }
 
-impl<E> core::convert::TryFrom<ConsumeFailure<Fault<E>>> for Fault<E>
+impl<E> core::convert::TryFrom<ClassicalConsumerFailure<Fault<E>>> for Fault<E>
 where
     E: Debug + Error + 'static,
 {
     type Error = ();
 
-    #[throws(<Self as core::convert::TryFrom<ConsumeFailure<Self>>>::Error)]
-    fn try_from(failure: ConsumeFailure<Fault<E>>) -> Self {
-        if let ConsumeFailure::Fault(fault) = failure {
+    #[throws(<Self as core::convert::TryFrom<ClassicalConsumerFailure<Self>>>::Error)]
+    fn try_from(failure: ClassicalConsumerFailure<Fault<E>>) -> Self {
+        if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -98,26 +98,26 @@ where
 
 impl<O, E> Consumer for Thread<O, E>
 where
-    E: core::convert::TryFrom<ConsumeFailure<E>> + Error + 'static,
+    E: core::convert::TryFrom<ClassicalConsumerFailure<E>> + Error + 'static,
     O: Debug,
 {
     type Good = O;
-    type Structure = crate::ClassicConsumer<Fault<E>>;
+    type Failure = ClassicalConsumerFailure<Fault<E>>;
 
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     #[inline]
     fn consume(&self) -> Self::Good {
         match self.consumer.consume() {
             Ok(output) => match output {
                 Outcome::Success(success) => success,
-                Outcome::Error(error) => throw!(ConsumeFailure::Fault(Fault::Error(error))),
+                Outcome::Error(error) => throw!(ClassicalConsumerFailure::Fault(Fault::Error(error))),
                 #[allow(clippy::panic)]
                 // Propogating the panic that occurred in call provided by third-party.
                 Outcome::Panic(panic) => panic!(panic),
             },
             Err(failure) => match failure {
-                ConsumeFailure::EmptyStock => throw!(ConsumeFailure::EmptyStock),
-                ConsumeFailure::Fault(_) => throw!(Fault::Dropped),
+                ClassicalConsumerFailure::EmptyStock => throw!(ClassicalConsumerFailure::EmptyStock),
+                ClassicalConsumerFailure::Fault(_) => throw!(Fault::Dropped),
             },
         }
     }

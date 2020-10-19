@@ -2,7 +2,7 @@
 use {
     crate::{
         io::{Reader, Writer},
-        ConsumeFailure, Consumer, ProduceFailure, Producer,
+        ClassicalConsumerFailure, Consumer, ProduceFailure, Producer,
     },
     conventus::{AssembleFrom, DisassembleInto},
     core::{cell::RefCell, fmt::Debug},
@@ -80,10 +80,10 @@ where
     <O as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Structure = crate::ClassicConsumer<crate::io::ReadFault<O>>;
+    type Failure = ClassicalConsumerFailure<crate::io::ReadFault<O>>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         self.output.consume()?
     }
@@ -117,10 +117,10 @@ pub struct Waiter {
 
 impl Consumer for Waiter {
     type Good = ExitStatus;
-    type Structure = crate::ClassicConsumer<WaitFault>;
+    type Failure = ClassicalConsumerFailure<WaitFault>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if let Some(status) =
             self.child
@@ -133,7 +133,7 @@ impl Consumer for Waiter {
         {
             status
         } else {
-            throw!(ConsumeFailure::EmptyStock);
+            throw!(ClassicalConsumerFailure::EmptyStock);
         }
     }
 }
@@ -187,12 +187,12 @@ pub struct WaitFault {
     error: io::Error,
 }
 
-impl core::convert::TryFrom<ConsumeFailure<WaitFault>> for WaitFault {
+impl core::convert::TryFrom<ClassicalConsumerFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[throws(Self::Error)]
-    fn try_from(failure: ConsumeFailure<WaitFault>) -> Self {
-        if let ConsumeFailure::Fault(fault) = failure {
+    fn try_from(failure: ClassicalConsumerFailure<WaitFault>) -> Self {
+        if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

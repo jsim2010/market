@@ -3,7 +3,7 @@ use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
         thread::Thread,
-        ClosedMarketFault, ConsumeFailure, Consumer, ProduceFailure, Producer,
+        ClosedMarketFault, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
@@ -39,15 +39,15 @@ where
     Closed,
 }
 
-impl<G> core::convert::TryFrom<ConsumeFailure<ReadFault<G>>> for ReadFault<G>
+impl<G> core::convert::TryFrom<ClassicalConsumerFailure<ReadFault<G>>> for ReadFault<G>
 where
     G: AssembleFrom<u8> + Debug,
 {
     type Error = ();
 
     #[throws(Self::Error)]
-    fn try_from(failure: ConsumeFailure<ReadFault<G>>) -> Self {
-        if let ConsumeFailure::Fault(fault) = failure {
+    fn try_from(failure: ClassicalConsumerFailure<ReadFault<G>>) -> Self {
+        if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -87,11 +87,10 @@ where
     <G as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
-    // ClosedMarketFault is prefered to the equivalent and more general <ByteConsumer as Consumer>::Error in order to keep ByteConsumer private.
-    type Structure = crate::ClassicConsumer<ReadFault<G>>;
+    type Failure = ClassicalConsumerFailure<ReadFault<G>>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         let mut bytes = self
             .byte_consumer
@@ -100,8 +99,8 @@ where
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
-            AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
-            AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadFault::Assemble(e)),
+            AssembleFailure::Incomplete => ClassicalConsumerFailure::EmptyStock,
+            AssembleFailure::Error(e) => ClassicalConsumerFailure::Fault(ReadFault::Assemble(e)),
         })?
     }
 }
@@ -251,10 +250,10 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Structure = crate::ClassicConsumer<ClosedMarketFault>;
+    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(crate::ConsumerFailure<Self>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         self.consumer.consume()?
     }
