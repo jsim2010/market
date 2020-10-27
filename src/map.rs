@@ -1,6 +1,6 @@
 //! Implements actors that map goods and errors.
 use {
-    crate::{error, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer},
+    crate::{error, Consumer, ClassicalProducerFailure, Producer},
     core::{convert::TryInto, marker::PhantomData},
     fehler::throws,
     std::{error::Error, rc::Rc},
@@ -8,34 +8,34 @@ use {
 
 /// A [`Consumer`] that maps the consumed good to a new good.
 #[derive(Debug)]
-pub(crate) struct Adapter<C, G, T> {
+pub(crate) struct Adapter<C, G, F> {
     /// The original consumer.
     consumer: Rc<C>,
     /// The desired type of `Self::Good`.
     good: PhantomData<G>,
-    /// The desired type of `ConsumerFault<Self>`.
-    fault: PhantomData<T>,
+    /// The desired type of `Self::Failure`.
+    failure: PhantomData<F>,
 }
 
-impl<C, G, T> Adapter<C, G, T> {
+impl<C, G, F> Adapter<C, G, F> {
     /// Creates a new [`Adapter`].
     pub(crate) const fn new(consumer: Rc<C>) -> Self {
         Self {
             consumer,
             good: PhantomData,
-            fault: PhantomData,
+            failure: PhantomData,
         }
     }
 }
 
-impl<C, G, T> Consumer for Adapter<C, G, T>
+impl<C, G, F> Consumer for Adapter<C, G, F>
 where
-    C: Consumer<Failure = ClassicalConsumerFailure<T>>,
+    C: Consumer,
     G: From<C::Good>,
-    T: From<error::ConsumerFault<C>> + core::convert::TryFrom<ClassicalConsumerFailure<T>> + Error + 'static,
+    F: From<C::Failure> + error::Failure,
 {
     type Good = G;
-    type Failure = ClassicalConsumerFailure<T>;
+    type Failure = F;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -43,7 +43,7 @@ where
         self.consumer
             .consume()
             .map(Self::Good::from)
-            .map_err(ClassicalConsumerFailure::map_into)?
+            .map_err(Self::Failure::from)?
     }
 }
 
@@ -71,21 +71,20 @@ impl<P, G, T> Converter<P, G, T> {
 
 impl<P, G, T> Producer for Converter<P, G, T>
 where
-    P: Producer,
-    <P as Producer>::Fault: 'static,
+    P: Producer<Failure = ClassicalProducerFailure<T>>,
     G: TryInto<P::Good>,
-    T: From<P::Fault> + Error,
+    T: core::convert::TryFrom<ClassicalProducerFailure<T>> + From<crate::error::Fault<P::Failure>> + Eq + Error,
 {
     type Good = G;
-    type Fault = T;
+    type Failure = ClassicalProducerFailure<T>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         if let Ok(converted_good) = good.try_into() {
             self.producer
                 .produce(converted_good)
-                .map_err(ProduceFailure::map_into)?
+                .map_err(ClassicalProducerFailure::map_into)?
         }
     }
 }

@@ -17,7 +17,7 @@ pub mod sync;
 pub mod thread;
 
 pub use {
-    error::{ConsumerFault, InfallibleConsumerFailure, ConsumerFailure, ClosedMarketFault, ClassicalConsumerFailure, ProduceFailure, Recall},
+    error::{Fault, InfallibleFailure, Failure, ClosedMarketFault, ClassicalConsumerFailure, ClassicalProducerFailure},
     never::Never,
 };
 
@@ -34,7 +34,8 @@ use {
 pub trait Consumer {
     /// The item being consumed.
     type Good;
-    type Failure: ConsumerFailure;
+    /// The type of failure that could occur during consumption.
+    type Failure: Failure;
 
     /// Retrieves the next good from the market without blocking.
     ///
@@ -42,7 +43,7 @@ pub trait Consumer {
     ///
     /// 1. `consume` returns without blocking the current process.
     /// 2. If at least one good is in stock, `consume` returns one of those goods.
-    /// 3. If fault `T` is thrown during consumption, `consume` throws failure `F` such that `ConsumerFault::<Self>::try_from(F)` returns `Ok(T)`.
+    /// 3. If fault `T` is thrown during consumption, `consume` throws failure `F` such that `Fault::<Self::Failure>::try_from(F)` returns `Ok(T)`.
     /// 4. If no good can be returned, `consume` throws an appropriate failure.
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good;
@@ -51,7 +52,7 @@ pub trait Consumer {
     ///
     /// If no goods can be consumed, an empty list is returned. If a fault is thrown after consuming 1 or more goods, the fault is ignored and the current list of goods is returned.
     #[inline]
-    #[throws(ConsumerFault<Self>)]
+    #[throws(Fault<Self::Failure>)]
     fn consume_all(&self) -> Vec<Self::Good> {
         let mut goods = Vec::new();
 
@@ -61,7 +62,7 @@ pub trait Consumer {
                     goods.push(good);
                 }
                 Err(failure) => {
-                    if let Ok(fault) = ConsumerFault::<Self>::try_from(failure) {
+                    if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
                         if goods.is_empty() {
                             throw!(fault)
                         }
@@ -75,7 +76,7 @@ pub trait Consumer {
 
     /// Retrieves the next good from the market, blocking until one is available.
     #[inline]
-    #[throws(ConsumerFault<Self>)]
+    #[throws(Fault<Self::Failure>)]
     fn demand(&self) -> Self::Good {
         loop {
             match self.consume() {
@@ -83,7 +84,7 @@ pub trait Consumer {
                     break good;
                 }
                 Err(failure) => {
-                    if let Ok(fault) = ConsumerFault::<Self>::try_from(failure) {
+                    if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
                         throw!(fault);
                     }
                 }
@@ -97,36 +98,25 @@ pub trait Consumer {
 pub trait Producer {
     /// The item being produced.
     type Good;
-    /// The fault that could be thrown during production.
-    type Fault: Error;
+    /// The type of failure that could occur during production.
+    type Failure: Failure;
 
     /// Stores `good` in the market without blocking.
     ///
     /// To ensure all functionality of the `Producer` performs as specified, the implementor MUST implement `produce` such that all of the following specifications are true:
     ///
     /// 1. `produce` returns without blocking the current process.
-    /// 2. If the market has space available for `good`, `process` stores `good` in the market.
-    /// 3. If the market has no space available for `good`, `process` throws `ProduceFailure::FullStock`.
-    /// 4. If fault `T` is thrown, `produce` throws `ProduceFailure::Fault(T)`.
+    /// 2. If the market can store `good`, `process` stores `good` in the market.
+    /// 3. If fault `T` is thrown during production, `produce` throws failure `F` such that `Fault::<Self::Failure>::try_from(F)` returns `Ok(T)`.
+    /// 4. If `good` cannot be stored, `produce` throws an appropriate failure.
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good);
-
-    /// Stores `good` in the market without blocking, returning `good` on failure.
-    #[throws(Recall<Self::Good, Self::Fault>)]
-    fn produce_or_recall(&self, good: Self::Good)
-    where
-        // Debug and Dislay bounds required by Recall.
-        Self::Good: Clone + Debug,
-    {
-        self.produce(good.clone())
-            .map_err(|failure| Recall::new(good, failure))?
-    }
 
     /// Stores each good in `goods` in the market without blocking.
     ///
     /// If a failure is thrown, all goods remaining to be produced are not attempted.
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce_all(&self, goods: Vec<Self::Good>) {
         for good in goods {
             self.produce(good)?
@@ -135,18 +125,14 @@ pub trait Producer {
 
     /// Stores `good` in the market, blocking until space is available.
     #[inline]
-    #[throws(Self::Fault)]
-    fn force(&self, mut good: Self::Good)
+    #[throws(Fault<Self::Failure>)]
+    fn force(&self, good: Self::Good)
     where
         Self::Good: Clone + Debug,
-        Self::Fault: 'static,
     {
-        loop {
-            match self.produce_or_recall(good) {
-                Ok(()) => break,
-                Err(recall) => {
-                    good = recall.overstock()?;
-                }
+        while let Err(failure) = self.produce(good.clone()) {
+            if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
+                throw!(fault)
             }
         }
     }
@@ -154,11 +140,10 @@ pub trait Producer {
     /// Stores every good in `goods`, blocking until space is available.
     ///
     /// If an error is thrown, all goods remaining to be produced are not attempted.
-    #[throws(Self::Fault)]
+    #[throws(Fault<Self::Failure>)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
         Self::Good: Clone + Debug,
-        Self::Fault: 'static,
     {
         for good in goods {
             self.force(good)?
@@ -168,17 +153,13 @@ pub trait Producer {
 
 /// A [`Consumer`] that consumes goods of type `G` from multiple [`Consumer`]s.
 #[derive(Default)]
-pub struct Collector<G, T> 
-where
-    T: Debug,
+pub struct Collector<G, F> 
 {
     /// The [`Consumer`]s.
-    consumers: Vec<Box<dyn Consumer<Good = G, Failure = ClassicalConsumerFailure<T>>>>,
+    consumers: Vec<Box<dyn Consumer<Good = G, Failure = F>>>,
 }
 
-impl<G, T> Collector<G, T>
-where
-    T: Debug + 'static,
+impl<G, F> Collector<G, F>
 {
     /// Creates a new, empty [`Collector`].
     #[must_use]
@@ -193,31 +174,37 @@ where
     #[inline]
     pub fn push<C>(&mut self, consumer: std::rc::Rc<C>)
     where
-        C: Consumer<Failure = ClassicalConsumerFailure<T>> + 'static,
+        C: Consumer + 'static,
         G: From<C::Good> + 'static,
-        T: From<ConsumerFault<C>> + TryFrom<ClassicalConsumerFailure<T>> + Error + 'static,
+        F: From<C::Failure> + Failure + 'static,
     {
         self.consumers.push(Box::new(map::Adapter::new(consumer)));
     }
 }
 
-impl<G, T> Consumer for Collector<G, T>
+impl<G, F> Consumer for Collector<G, F>
 where
-    T: TryFrom<ClassicalConsumerFailure<T>> + Error + 'static,
+    F: Failure,
 {
     type Good = G;
-    type Failure = ClassicalConsumerFailure<T>;
+    type Failure = F;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        let mut result = Err(ClassicalConsumerFailure::EmptyStock);
+        let mut result = Err(F::insufficient_stock());
 
         for consumer in &self.consumers {
+            let mut is_finished = true;
             result = consumer.consume();
 
-            if let Err(ClassicalConsumerFailure::EmptyStock) = result {
-            } else {
+            if let Err(ref failure) = result {
+                if failure.is_insufficient_stock() {
+                    is_finished = false;
+                }
+            }
+
+            if is_finished {
                 break;
             }
         }
@@ -239,12 +226,12 @@ where
 /// Distributes goods to multiple producers.
 pub struct Distributor<G, T> {
     /// The producers.
-    producers: Vec<Box<dyn Producer<Good = G, Fault = T>>>,
+    producers: Vec<Box<dyn Producer<Good = G, Failure = ClassicalProducerFailure<T>>>>,
 }
 
 impl<G, T> Distributor<G, T>
 where
-    T: 'static,
+    T: Eq + 'static,
 {
     /// Creates a new, empty [`Distributor`].
     #[must_use]
@@ -257,9 +244,9 @@ where
     #[inline]
     pub fn push<P>(&mut self, producer: std::rc::Rc<P>)
     where
-        P: Producer + 'static,
+        P: Producer<Failure = ClassicalProducerFailure<T>> + 'static,
         G: core::convert::TryInto<P::Good> + 'static,
-        T: From<P::Fault> + Error + 'static,
+        T: TryFrom<ClassicalProducerFailure<T>> + From<Fault<P::Failure>> + Error + 'static,
     {
         self.producers.push(Box::new(map::Converter::new(producer)));
     }
@@ -283,14 +270,14 @@ impl<G, T> Default for Distributor<G, T> {
 
 impl<G, T> Producer for Distributor<G, T>
 where
-    T: Error + 'static,
+    T: TryFrom<ClassicalProducerFailure<T>> + Eq + Error + 'static,
     G: Clone,
 {
     type Good = G;
-    type Fault = T;
+    type Failure = ClassicalProducerFailure<T>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         for producer in &self.producers {
             producer.produce(good.clone())?;
@@ -360,13 +347,13 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         if self.closure.consume().is_ok() {
-            throw!(ProduceFailure::Fault(ClosedMarketFault));
+            throw!(ClassicalProducerFailure::Fault(ClosedMarketFault));
         } else {
             self.queue.push(good);
         }
@@ -396,7 +383,7 @@ where
     G: Debug,
 {
     type Good = G;
-    type Failure = InfallibleConsumerFailure;
+    type Failure = InfallibleFailure;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -404,7 +391,7 @@ where
         if let Some(good) = self.queue.pop() {
             good
         } else {
-            throw!(InfallibleConsumerFailure)
+            throw!(InfallibleFailure)
         }
     }
 }
@@ -414,11 +401,11 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = Never;
+    type Failure = ClassicalProducerFailure<Never>;
 
     // TODO: Find a way to indicate this never fails.
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.queue.push(good);
     }

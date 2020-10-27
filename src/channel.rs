@@ -1,6 +1,6 @@
 //! Implements `Consumer` and `Producer` for various types of channels.
 use {
-    crate::{ClosedMarketFault, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer},
+    crate::{ClosedMarketFault, ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer},
     core::fmt::Debug,
     fehler::throws,
     std::sync::mpsc,
@@ -62,10 +62,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.tx.send(good)?
     }
@@ -78,7 +78,7 @@ impl<G> From<mpsc::Sender<G>> for StdProducer<G> {
     }
 }
 
-impl<G> From<mpsc::SendError<G>> for ProduceFailure<ClosedMarketFault> {
+impl<G> From<mpsc::SendError<G>> for ClassicalProducerFailure<ClosedMarketFault> {
     #[inline]
     fn from(_value: mpsc::SendError<G>) -> Self {
         Self::Fault(ClosedMarketFault)
@@ -145,10 +145,10 @@ where
     G: Debug,
 {
     type Good = G;
-    type Fault = ClosedMarketFault;
+    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.tx.try_send(good)?
     }
@@ -161,7 +161,7 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     }
 }
 
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceFailure<ClosedMarketFault> {
+impl<G> From<crossbeam_channel::TrySendError<G>> for ClassicalProducerFailure<ClosedMarketFault> {
     #[inline]
     fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
         match value {

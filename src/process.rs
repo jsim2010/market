@@ -2,10 +2,10 @@
 use {
     crate::{
         io::{Reader, Writer},
-        ClassicalConsumerFailure, Consumer, ProduceFailure, Producer,
+        ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer,
     },
     conventus::{AssembleFrom, DisassembleInto},
-    core::{cell::RefCell, fmt::Debug},
+    core::{convert::TryFrom, cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
     std::{
         io,
@@ -95,10 +95,10 @@ where
     <I as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
-    type Fault = <Writer<I> as Producer>::Fault;
+    type Failure = ClassicalProducerFailure<crate::io::WriteError<I>>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.input.produce(good)?
     }
@@ -187,12 +187,27 @@ pub struct WaitFault {
     error: io::Error,
 }
 
-impl core::convert::TryFrom<ClassicalConsumerFailure<WaitFault>> for WaitFault {
+impl TryFrom<ClassicalConsumerFailure<WaitFault>> for WaitFault {
     type Error = ();
 
+    #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<WaitFault>) -> Self {
+    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
         if let ClassicalConsumerFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
+}
+
+impl TryFrom<ClassicalProducerFailure<WaitFault>> for WaitFault {
+    type Error = ();
+
+    #[inline]
+    #[throws(Self::Error)]
+    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
+        if let ClassicalProducerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

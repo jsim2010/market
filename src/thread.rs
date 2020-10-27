@@ -21,7 +21,7 @@ use {
 type Panic = Box<dyn Any + Send + 'static>;
 
 /// An error while consuming the outcome of a thread.
-#[derive(Debug, ThisError)]
+#[derive(Debug, Eq, PartialEq, ThisError)]
 pub enum Fault<E>
 where
     E: Debug + Error + 'static,
@@ -40,8 +40,9 @@ where
 {
     type Error = ();
 
+    #[inline]
     #[throws(<Self as core::convert::TryFrom<ClassicalConsumerFailure<Self>>>::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<Fault<E>>) -> Self {
+    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
         if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
@@ -98,7 +99,7 @@ where
 
 impl<O, E> Consumer for Thread<O, E>
 where
-    E: core::convert::TryFrom<ClassicalConsumerFailure<E>> + Error + 'static,
+    E: core::convert::TryFrom<ClassicalConsumerFailure<E>> + Eq + Error + 'static,
     O: Debug,
 {
     type Good = O;

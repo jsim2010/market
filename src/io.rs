@@ -3,7 +3,7 @@ use {
     crate::{
         channel::{CrossbeamConsumer, CrossbeamProducer},
         thread::Thread,
-        ClosedMarketFault, ClassicalConsumerFailure, Consumer, ProduceFailure, Producer,
+        ClosedMarketFault, ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
@@ -45,8 +45,9 @@ where
 {
     type Error = ();
 
+    #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<ReadFault<G>>) -> Self {
+    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
         if let ClassicalConsumerFailure::Fault(fault) = failure {
             fault
         } else {
@@ -83,7 +84,7 @@ impl<G> Reader<G> {
 
 impl<G> Consumer for Reader<G>
 where
-    G: AssembleFrom<u8> + Debug + 'static,
+    G: AssembleFrom<u8> + Debug +'static,
     <G as AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
@@ -161,15 +162,14 @@ where
     <G as DisassembleInto<u8>>::Error: 'static,
 {
     type Good = G;
-    // ClosedMarketFault is equivalent to <ByteProducer as Producer>::Error. ClosedMarketFault is prefered in order to keep ByteProducer private.
-    type Fault = WriteError<G>;
+    type Failure = ClassicalProducerFailure<WriteError<G>>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.byte_producer
-            .produce_all(good.disassemble_into().map_err(Self::Fault::Disassemble)?)
-            .map_err(ProduceFailure::map_into)?
+            .produce_all(good.disassemble_into().map_err(WriteError::Disassemble)?)
+            .map_err(ClassicalProducerFailure::map_into)?
     }
 }
 
@@ -187,6 +187,23 @@ where
     /// Writer was closed.
     #[error("writer was closed")]
     Closed,
+}
+
+impl<G> core::convert::TryFrom<ClassicalProducerFailure<WriteError<G>>> for WriteError<G>
+where
+    G: DisassembleInto<u8> + Debug,
+{
+    type Error = ();
+
+    #[inline]
+    #[throws(Self::Error)]
+    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
+        if let ClassicalProducerFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(())
+        }
+    }
 }
 
 impl<G> From<ClosedMarketFault> for WriteError<G>
@@ -366,10 +383,10 @@ impl Drop for ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Fault = ClosedMarketFault;
+    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
 
     #[inline]
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.producer.produce(good)?
     }
