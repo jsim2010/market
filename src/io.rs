@@ -1,5 +1,6 @@
-//! Implements `Consumer` and `Producer` for `std::io::Read` and `std::io::Write` trait objects.
+//! Implements [`Producer`] and [`Consumer`] for [`std::io::Write`] and [`std::io::Read`] trait objects.
 use {
+    crate::{Consumer, Producer},
     core::{
         cell::RefCell,
         fmt::Debug,
@@ -7,14 +8,82 @@ use {
         sync::atomic::{AtomicBool, Ordering},
     },
     fehler::{throw, throws},
-    log::{error, warn},
+    log::error,
     std::{
         io::{ErrorKind, Read, Write},
         panic::UnwindSafe,
         sync::Arc,
-        thread::JoinHandle,
     },
 };
+
+#[derive(Debug, thiserror::Error)]
+enum ReadError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Closed(#[from] crate::channel::ClosedChannelFault),
+}
+
+/// Consumes bytes using a [`std::io::Read`] trait object.
+///
+/// Bytes are read in a separate thread to ensure [`consume()`] is non-blocking.
+#[derive(Debug)]
+struct ByteConsumer {
+    /// Consumes bytes that have been read.
+    consumer: crate::channel::CrossbeamConsumer<u8>,
+    /// The thread that reads bytes.
+    thread: crate::thread::Thread<(), ReadError>,
+    /// Triggers quitting the thread.
+    quit_trigger: Arc<crate::sync::Trigger>,
+}
+
+impl ByteConsumer {
+    /// Creates a new [`ByteConsumer`].
+    #[inline]
+    fn new<R: Read + Send + UnwindSafe + 'static>(mut reader: R) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let quit_trigger = Arc::new(crate::sync::Trigger::new());
+        let quitting = Arc::clone(&quit_trigger);
+
+        Self {
+            consumer: rx.into(),
+            thread: crate::thread::Thread::new(move || {
+                let mut buffer = [0; 1024];
+                let producer = crate::channel::CrossbeamProducer::from(tx);
+
+                while quitting.consume().is_err() {
+                    let len = reader.read(&mut buffer)?;
+                    let (bytes, _) = buffer.split_at(len);
+
+                    producer.force_all(bytes.to_vec())?;
+                }
+
+                Ok(())
+            }),
+            quit_trigger,
+        }
+    }
+
+    #[allow(unused_must_use)] // Trigger::produce() cannot fail.
+    fn join(&self) {
+        self.quit_trigger.produce(());
+
+        if let Err(error) = self.thread.demand() {
+            error!("Unable to join `ByteConsumer` thread: {:?}", error);
+        }
+    }
+}
+
+impl crate::Consumer for ByteConsumer {
+    type Good = u8;
+    type Failure = crate::ConsumerFailure<crate::channel::ClosedChannelFault>;
+
+    #[inline]
+    #[throws(Self::Failure)]
+    fn consume(&self) -> Self::Good {
+        self.consumer.consume()?
+    }
+}
 
 /// A fault while reading a good of type `G`.
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +101,7 @@ where
     Closed,
 }
 
-impl<G> core::convert::TryFrom<crate::error::ConsumerFailure<ReadFault<G>>> for ReadFault<G>
+impl<G> core::convert::TryFrom<crate::ConsumerFailure<ReadFault<G>>> for ReadFault<G>
 where
     G: conventus::AssembleFrom<u8> + Debug,
 {
@@ -40,8 +109,8 @@ where
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: crate::error::ConsumerFailure<Self>) -> Self {
-        if let crate::error::ConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::ConsumerFailure<Self>) -> Self {
+        if let crate::ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -65,13 +134,17 @@ impl<G> Reader<G> {
     #[inline]
     pub fn new<R>(reader: R) -> Self
     where
-        R: Read + Send + 'static,
+        R: Read + Send + UnwindSafe + 'static,
     {
         Self {
             byte_consumer: ByteConsumer::new(reader),
             buffer: RefCell::new(Vec::new()),
             phantom: PhantomData,
         }
+    }
+
+    pub fn join(&self) {
+        self.byte_consumer.join();
     }
 }
 
@@ -81,7 +154,7 @@ where
     <G as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
-    type Failure = crate::error::ConsumerFailure<ReadFault<G>>;
+    type Failure = crate::ConsumerFailure<ReadFault<G>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -93,35 +166,9 @@ where
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
-            conventus::AssembleFailure::Incomplete => crate::error::ConsumerFailure::EmptyStock,
-            conventus::AssembleFailure::Error(e) => crate::error::ConsumerFailure::Fault(ReadFault::Assemble(e)),
+            conventus::AssembleFailure::Incomplete => crate::ConsumerFailure::EmptyStock,
+            conventus::AssembleFailure::Error(e) => crate::ConsumerFailure::Fault(ReadFault::Assemble(e)),
         })?
-    }
-}
-
-/// An error while reading a good of type `G`.
-#[derive(Debug, thiserror::Error)]
-pub enum ReadError<G>
-where
-    G: conventus::AssembleFrom<u8> + Debug,
-    <G as conventus::AssembleFrom<u8>>::Error: 'static,
-{
-    /// Unable to assemble the good from bytes.
-    #[error("{0}")]
-    // This cannot be #[from] as it conflicts with From<T> for T
-    Assemble(#[source] <G as conventus::AssembleFrom<u8>>::Error),
-    /// Reader was closed.
-    #[error("reader was closed")]
-    Closed,
-}
-
-impl<G> From<crate::error::ClosedMarketFault> for ReadError<G>
-where
-    G: conventus::AssembleFrom<u8> + Debug,
-{
-    #[inline]
-    fn from(_: crate::error::ClosedMarketFault) -> Self {
-        Self::Closed
     }
 }
 
@@ -199,87 +246,13 @@ where
     }
 }
 
-impl<G> From<crate::error::ClosedMarketFault> for WriteError<G>
+impl<G> From<crate::channel::ClosedChannelFault> for WriteError<G>
 where
     G: conventus::DisassembleInto<u8> + Debug,
 {
     #[inline]
-    fn from(_: crate::error::ClosedMarketFault) -> Self {
+    fn from(_: crate::channel::ClosedChannelFault) -> Self {
         Self::Closed
-    }
-}
-
-/// Consumes bytes using an item that implements [`Read`].
-///
-/// Reading is done in a separate thread to ensure consume() is non-blocking.
-#[derive(Debug)]
-struct ByteConsumer {
-    /// Consumes bytes from the reading thread.
-    consumer: crate::channel::CrossbeamConsumer<u8>,
-    /// The thread that reads bytes.
-    join_handle: Option<JoinHandle<()>>,
-    /// If the thread is quitting.
-    is_quitting: Arc<AtomicBool>,
-}
-
-impl ByteConsumer {
-    /// Creates a new [`ByteConsumer`].
-    #[inline]
-    fn new<R: Read + Send + 'static>(mut reader: R) -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let is_quitting = Arc::new(AtomicBool::new(false));
-        let quitting = Arc::clone(&is_quitting);
-
-        let join_handle = std::thread::spawn(move || {
-            let mut buffer = [0; 1024];
-            let producer: crate::channel::CrossbeamProducer<u8> = tx.into();
-
-            while !quitting.load(Ordering::Relaxed) {
-                match reader.read(&mut buffer) {
-                    Ok(len) => {
-                        let (bytes, _) = buffer.split_at(len);
-
-                        if let Err(error) = {
-                            use crate::Producer as _;
-                            producer.force_all(bytes.to_vec())
-                        } {
-                            error!("`ByteConsumer` failed to store bytes: {}", error);
-                        }
-                    }
-                    Err(error) => {
-                        warn!("`ByteConsumer` failed to read bytes: {}", error);
-                    }
-                }
-            }
-        });
-
-        Self {
-            consumer: rx.into(),
-            join_handle: Some(join_handle),
-            is_quitting,
-        }
-    }
-}
-
-impl crate::Consumer for ByteConsumer {
-    type Good = u8;
-    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        self.consumer.consume()?
-    }
-}
-
-impl Drop for ByteConsumer {
-    #[inline]
-    fn drop(&mut self) {
-        self.is_quitting.store(true, Ordering::Relaxed);
-
-        if let Some(Err(error)) = self.join_handle.take().map(JoinHandle::join) {
-            error!("Unable to join `ByteConsumer` thread: {:?}", error);
-        }
     }
 }
 
@@ -295,7 +268,7 @@ struct ByteProducer {
     /// If `Self` is currently being dropped.
     is_dropping: Arc<AtomicBool>,
     /// The thread.
-    thread: crate::thread::Thread<(), crate::error::ClosedMarketFault>,
+    thread: crate::thread::Thread<(), crate::channel::ClosedChannelFault>,
 }
 
 impl ByteProducer {
@@ -371,10 +344,7 @@ impl Drop for ByteProducer {
     fn drop(&mut self) {
         self.is_dropping.store(true, Ordering::Relaxed);
 
-        if let Err(error) = {
-            use crate::Consumer as _;
-            self.thread.demand()
-        } {
+        if let Err(error) = self.thread.demand() {
             error!("Unable to join `ByteProducer` thread: {:?}", error);
         }
     }
@@ -382,7 +352,7 @@ impl Drop for ByteProducer {
 
 impl crate::Producer for ByteProducer {
     type Good = u8;
-    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
+    type Failure = crate::error::ProducerFailure<crate::channel::ClosedChannelFault>;
 
     #[inline]
     #[throws(Self::Failure)]

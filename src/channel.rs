@@ -1,26 +1,66 @@
-//! Implements `Consumer` and `Producer` for various types of channels.
+//! Implements [`Producer`] and [`Consumer`] for various types of channels.
 use {
     core::fmt::Debug,
     fehler::throws,
-    std::sync::mpsc,
+    std::sync::mpsc::{Receiver, Sender, TryRecvError, SendError},
 };
 
-/// A [`std::sync::mpsc::Receiver`] that implements [`Consumer`].
-///
-/// [`std::sync::mpsc::Receiver`]: https:://doc.rust-lang.org/std/sync/mpsc/struct.Receiver.html
-/// [`Consumer`]: ../trait.Consumer.html
+/// A fault caused by the other side of the channel being dropped.
+#[derive(Debug, thiserror::Error)]
+#[error("channel is closed")]
+pub struct ClosedChannelFault;
+
+try_from_consumer_failure!(ClosedChannelFault);
+try_from_producer_failure!(ClosedChannelFault);
+
+impl From<TryRecvError> for crate::ConsumerFailure<ClosedChannelFault> {
+    #[inline]
+    fn from(error: TryRecvError) -> Self {
+        match error {
+            TryRecvError::Empty => Self::EmptyStock,
+            TryRecvError::Disconnected => Self::Fault(ClosedChannelFault),
+        }
+    }
+}
+
+impl<G> From<SendError<G>> for crate::ProducerFailure<ClosedChannelFault> {
+    #[inline]
+    fn from(_: SendError<G>) -> Self {
+        Self::Fault(ClosedChannelFault)
+    }
+}
+
+impl From<crossbeam_channel::TryRecvError> for crate::ConsumerFailure<ClosedChannelFault> {
+    #[inline]
+    fn from(error: crossbeam_channel::TryRecvError) -> Self {
+        match error {
+            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
+            crossbeam_channel::TryRecvError::Disconnected => Self::Fault(ClosedChannelFault),
+        }
+    }
+}
+
+impl<G> From<crossbeam_channel::TrySendError<G>> for crate::ProducerFailure<ClosedChannelFault> {
+    #[inline]
+    fn from(error: crossbeam_channel::TrySendError<G>) -> Self {
+        match error {
+            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Fault(ClosedChannelFault),
+        }
+    }
+}
+
+/// A [`std::sync::mpsc::Receiver`] that implements [`Consumer<Good = G>`].
 #[derive(Debug)]
 pub struct StdConsumer<G> {
     /// The receiver.
-    rx: mpsc::Receiver<G>,
+    rx: Receiver<G>,
 }
 
 impl<G> crate::Consumer for StdConsumer<G>
-where
-    G: Debug,
 {
     type Good = G;
-    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
+    type Failure = crate::ConsumerFailure<ClosedChannelFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -29,39 +69,24 @@ where
     }
 }
 
-impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
+impl<G> From<Receiver<G>> for StdConsumer<G> {
     #[inline]
-    fn from(value: mpsc::Receiver<G>) -> Self {
-        Self { rx: value }
-    }
-}
-
-impl From<mpsc::TryRecvError> for crate::error::ConsumerFailure<crate::error::ClosedMarketFault> {
-    #[inline]
-    fn from(value: mpsc::TryRecvError) -> Self {
-        match value {
-            mpsc::TryRecvError::Empty => Self::EmptyStock,
-            mpsc::TryRecvError::Disconnected => Self::Fault(crate::error::ClosedMarketFault),
-        }
+    fn from(rx: Receiver<G>) -> Self {
+        Self { rx }
     }
 }
 
 /// A [`std::sync::mpsc::Sender`] that implements [`Producer`].
-///
-/// [`std::sync::mpsc::Sender`]: https:://doc.rust-lang.org/std/sync/mpsc/struct.Sender.html
-/// [`Producer`]: ../trait.Producer.html
 #[derive(Debug)]
 pub struct StdProducer<G> {
     /// The sender.
-    tx: mpsc::Sender<G>,
+    tx: Sender<G>,
 }
 
 impl<G> crate::Producer for StdProducer<G>
-where
-    G: Debug,
 {
     type Good = G;
-    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
+    type Failure = crate::ProducerFailure<ClosedChannelFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -70,38 +95,25 @@ where
     }
 }
 
-impl<G> From<mpsc::Sender<G>> for StdProducer<G> {
+impl<G> From<Sender<G>> for StdProducer<G> {
     #[inline]
-    fn from(value: mpsc::Sender<G>) -> Self {
-        Self { tx: value }
+    fn from(tx: Sender<G>) -> Self {
+        Self { tx }
     }
 }
 
-impl<G> From<mpsc::SendError<G>> for crate::error::ProducerFailure<crate::error::ClosedMarketFault> {
-    #[inline]
-    fn from(_value: mpsc::SendError<G>) -> Self {
-        Self::Fault(crate::error::ClosedMarketFault)
-    }
-}
-
-/// A `crossbeam_channel::Receiver` that implements [`Consumer`].
-///
-/// [`Consumer`]: ../trait.Consumer.html
+/// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
 pub struct CrossbeamConsumer<G>
-where
-    G: Debug,
 {
     /// The receiver.
     rx: crossbeam_channel::Receiver<G>,
 }
 
 impl<G> crate::Consumer for CrossbeamConsumer<G>
-where
-    G: Debug,
 {
     type Good = G;
-    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
+    type Failure = crate::ConsumerFailure<ClosedChannelFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -111,28 +123,14 @@ where
 }
 
 impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G>
-where
-    G: Debug,
 {
     #[inline]
-    fn from(value: crossbeam_channel::Receiver<G>) -> Self {
-        Self { rx: value }
+    fn from(rx: crossbeam_channel::Receiver<G>) -> Self {
+        Self { rx }
     }
 }
 
-impl From<crossbeam_channel::TryRecvError> for crate::error::ConsumerFailure<crate::error::ClosedMarketFault> {
-    #[inline]
-    fn from(value: crossbeam_channel::TryRecvError) -> Self {
-        match value {
-            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
-            crossbeam_channel::TryRecvError::Disconnected => Self::Fault(crate::error::ClosedMarketFault),
-        }
-    }
-}
-
-/// A `crossbeam_channel::Sender` that implements [`Producer`].
-///
-/// [`Producer`]: ../trait.Producer.html
+/// A [`crossbeam_channel::Sender`] that implements [`Producer`].
 #[derive(Debug)]
 pub struct CrossbeamProducer<G> {
     /// The sender.
@@ -140,11 +138,9 @@ pub struct CrossbeamProducer<G> {
 }
 
 impl<G> crate::Producer for CrossbeamProducer<G>
-where
-    G: Debug,
 {
     type Good = G;
-    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
+    type Failure = crate::ProducerFailure<ClosedChannelFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -155,17 +151,7 @@ where
 
 impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     #[inline]
-    fn from(value: crossbeam_channel::Sender<G>) -> Self {
-        Self { tx: value }
-    }
-}
-
-impl<G> From<crossbeam_channel::TrySendError<G>> for crate::error::ProducerFailure<crate::error::ClosedMarketFault> {
-    #[inline]
-    fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
-        match value {
-            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Fault(crate::error::ClosedMarketFault),
-        }
+    fn from(tx: crossbeam_channel::Sender<G>) -> Self {
+        Self { tx }
     }
 }

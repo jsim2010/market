@@ -1,4 +1,4 @@
-//! Implements synchronization items.
+//! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
@@ -24,20 +24,21 @@ impl Trigger {
 
 impl crate::Consumer for Trigger {
     type Good = ();
-    type Failure = crate::error::InfallibleFailure;
+    type Failure = crate::error::FaultlessFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            throw!(crate::error::InfallibleFailure)
+            throw!(crate::error::FaultlessFailure)
         }
     }
 }
 
+// TODO: Indicate this cannot fail.
 impl crate::Producer for Trigger {
     type Good = ();
-    type Failure = crate::error::InfallibleFailure;
+    type Failure = crate::error::FaultlessFailure;
 
     #[inline]
     #[throws(Self::Failure)]

@@ -1,4 +1,4 @@
-//! Implements `Consumer` and `Producer` for the stdio's of a process.
+//! Implements [`Producer`] and [`Consumer`] for the standard I/O streams of a process.
 use {
     core::{convert::TryFrom, cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
@@ -73,7 +73,7 @@ where
     <O as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Failure = crate::error::ConsumerFailure<crate::io::ReadFault<O>>;
+    type Failure = crate::ConsumerFailure<crate::io::ReadFault<O>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -110,7 +110,7 @@ pub struct Waiter {
 
 impl crate::Consumer for Waiter {
     type Good = ExitStatus;
-    type Failure = crate::error::ConsumerFailure<WaitFault>;
+    type Failure = crate::ConsumerFailure<WaitFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -124,9 +124,10 @@ impl crate::Consumer for Waiter {
                     error,
                 })?
         {
+            // TODO: Join both Readers and Writer.
             status
         } else {
-            throw!(crate::error::ConsumerFailure::EmptyStock);
+            throw!(crate::ConsumerFailure::EmptyStock);
         }
     }
 }
@@ -180,13 +181,13 @@ pub struct WaitFault {
     error: std::io::Error,
 }
 
-impl TryFrom<crate::error::ConsumerFailure<WaitFault>> for WaitFault {
+impl TryFrom<crate::ConsumerFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: crate::error::ConsumerFailure<Self>) -> Self {
-        if let crate::error::ConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::ConsumerFailure<Self>) -> Self {
+        if let crate::ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

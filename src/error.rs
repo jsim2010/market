@@ -1,38 +1,64 @@
 //! Implements errors thrown by `market`.
-//!
-//! There are 2 categories of errors thrown by `market`.
-//! 1) Failures: These indicate that an action was not successful.
-//! 2) Faults: These are a subset of Failrues that indicate that the market is currently in a state where no attempted action will be successful until the state is changed (if possible).
+#![macro_use]
 use {
     core::{convert::{Infallible, TryFrom}, fmt::{Display, Debug}},
-    fehler::{throw, throws},
     std::error::Error,
 };
 
-/// Describes the failures that could occur during a consumption or production.
-pub trait Failure: Sized {
-    /// Describes the fault that could occur.
-    type Fault: TryFrom<Self>;
+// TODO: Perhaps make these derive macros?
+// Since unable to implement TryFrom<ConsumerFailure<T>> for T due to T not being covered, this macro implements that functionality.
+macro_rules! try_from_consumer_failure {
+    ($t:ty) => {
+        impl core::convert::TryFrom<$crate::ConsumerFailure<$t>> for $t {
+            type Error = ();
+
+            #[fehler::throws(Self::Error)]
+            fn try_from(failure: $crate::ConsumerFailure<$t>) -> Self {
+                if let $crate::ConsumerFailure::Fault(fault) = failure {
+                    fault
+                } else {
+                    fehler::throw!(())
+                }
+            }
+        }
+    };
 }
 
-/// A shortcut for referring to the fault of `F`.
-pub type Fault<F> = <F as Failure>::Fault;
+// Since unable to implement TryFrom<ProducerFailure<T>> for T due to T not being covered, this macro implements that functionality.
+macro_rules! try_from_producer_failure {
+    ($t:ty) => {
+        impl core::convert::TryFrom<$crate::error::ProducerFailure<$t>> for $t {
+            type Error = ();
 
-/// A `Consumer` failed to consume a good.
+            #[fehler::throws(Self::Error)]
+            fn try_from(failure: $crate::error::ProducerFailure<$t>) -> Self {
+                if let $crate::error::ProducerFailure::Fault(fault) = failure {
+                    fault
+                } else {
+                    fehler::throw!(())
+                }
+            }
+        }
+    };
+}
+
+/// The typical [`Failure`] thrown when a [`Consumer`] is unable to consume a good.
+///
+/// This should be used in all cases where the only reason the [`Consumer`] can fail without a fault is due to the stock being empty.
 // thiserror::Error is not derived so that T is not required to impl Display. see www.github.com/dtolnay/thiserror/pull/107
 #[derive(Debug, Hash)]
 pub enum ConsumerFailure<T>
 {
     /// The stock of the market is empty.
     EmptyStock,
-    /// A fault was thrown during consumption.
+    /// Fault `T` was caught during consumption.
     Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ConsumerFailure<T>.
+#[allow(clippy::use_self)] // False positive for ConsumerFailure<U>.
 impl<T> ConsumerFailure<T>
 {
-    // This is done because From<ConsumerFailure<T>> for ConsumerFailure<U> cannot.
+    // From<ConsumerFailure<T>> for ConsumerFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
     /// Converts `ConsumerFailure<T>` into `ConsumerFailure<U>`.
     #[inline]
     pub fn map_into<U>(self) -> ConsumerFailure<U>
@@ -46,7 +72,14 @@ impl<T> ConsumerFailure<T>
     }
 }
 
-// Display and Error are implemented manually due to issue with thiserror::Error described above.
+impl<T> crate::Failure for ConsumerFailure<T>
+where
+    T: TryFrom<Self>,
+{
+    type Fault = T;
+}
+
+// Display is implemented manually due to issue with thiserror::Error described above.
 impl<T> Display for ConsumerFailure<T>
 where
     T: Display,
@@ -60,19 +93,13 @@ where
     }
 }
 
+// Error is implemented manually due to issue with thiserror::Error described above.
 impl<T> Error for ConsumerFailure<T>
 where
     T: Debug + Display,
 {}
 
-impl<T> Failure for ConsumerFailure<T>
-where
-    T: TryFrom<Self>,
-{
-    type Fault = T;
-}
-
-// TODO: Ideally could do From<conventus::AssembleFailure<E>> for ConsumerFailure<F> where F: From<E>. However this is overriden by From<E> for ConsumerFailure<E> since there is no way to indicate F != conventus::AssembleFailure<E>.
+// From<conventus::AssembleFailure<E>> for ConsumerFailure<T> where T: From<E> would be preferrable but this conflicts with From<T> for ConsumerFailure<T> due to the inability to indicate T != conventus::AssembleFailure<E>.
 impl<T> From<conventus::AssembleFailure<T>> for ConsumerFailure<T>
 {
     #[inline]
@@ -84,6 +111,7 @@ impl<T> From<conventus::AssembleFailure<T>> for ConsumerFailure<T>
     }
 }
 
+// From<T> is implemented manually due to issue with thiserror::Error described above.
 impl<T> From<T> for ConsumerFailure<T>
 {
     #[inline]
@@ -92,47 +120,41 @@ impl<T> From<T> for ConsumerFailure<T>
     }
 }
 
-/// A `Failure` in the case where a fault is not possible.
+/// The [`Failure`] thrown when an action fails in a case where a fault is not possible.
 #[derive(Clone, Copy, Debug)]
-pub struct InfallibleFailure;
+pub struct FaultlessFailure;
 
-impl TryFrom<InfallibleFailure> for Infallible {
+impl TryFrom<FaultlessFailure> for Infallible {
     type Error = ();
 
     #[inline]
-    fn try_from(_failure: InfallibleFailure) -> Result<Self, Self::Error> {
+    fn try_from(_failure: FaultlessFailure) -> Result<Self, Self::Error> {
         Err(())
     }
 }
 
-impl Failure for InfallibleFailure {
+impl crate::Failure for FaultlessFailure {
     type Fault = Infallible;
 }
 
-/// A `Producer` failed to produce a good.
-// Do not derive thiserror::Error so that ProducerFailure can be created without requiring impl Display.
+/// The typical [`Failure`] thrown when a [`Producer`] is unable to produce a good.
+///
+/// This should be used in all cases where the only reason the [`Producer`] can fail without a fault is due to the stock being full.
+// thiserror::Error is not derived so that T is not required to impl Display. see www.github.com/dtolnay/thiserror/pull/107
 #[derive(Debug, Hash)]
 pub enum ProducerFailure<T>
 {
     /// The stock of the market is full.
     FullStock,
-    /// A fault was thrown during production.
-    ///
-    /// Indicates the [`Producer`] is currently in a state where it will not produce any more goods.
+    /// Fault `T` was thrown during production.
     Fault(T),
-}
-
-impl<T> Failure for ProducerFailure<T>
-where
-    T: TryFrom<Self>,
-{
-    type Fault = T;
 }
 
 #[allow(clippy::use_self)] // False positive for ProducerFailure<T>.
 impl<T> ProducerFailure<T>
 {
-    /// Converts `self` into `ProducerFailure<U>`
+    // From<ProducerFailure<T>> for ProducerFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
+    /// Converts `ProducerFailure<T>` into `ProducerFailure<U>`.
     #[inline]
     pub fn map_into<U>(self) -> ProducerFailure<U>
     where
@@ -145,6 +167,14 @@ impl<T> ProducerFailure<T>
     }
 }
 
+impl<T> crate::Failure for ProducerFailure<T>
+where
+    T: TryFrom<Self>,
+{
+    type Fault = T;
+}
+
+// Display is implemented manually due to issue with thiserror::Error described above.
 impl<T> Display for ProducerFailure<T>
 where
     T: Display,
@@ -158,43 +188,17 @@ where
     }
 }
 
+// Error is implemented manually due to issue with thiserror::Error described above.
+impl<T> Error for ProducerFailure<T>
+where
+    T: Debug + Display,
+{}
+
+// From<T> is implemented manually due to issue with thiserror::Error described above.
 impl<T> From<T> for ProducerFailure<T>
 {
     #[inline]
     fn from(fault: T) -> Self {
         Self::Fault(fault)
-    }
-}
-
-/// An error interacting with a market due to the market being closed.
-#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
-#[error("market is closed")]
-pub struct ClosedMarketFault;
-
-impl TryFrom<ConsumerFailure<ClosedMarketFault>> for ClosedMarketFault {
-    type Error = ();
-
-    #[inline]
-    #[throws(Self::Error)]
-    fn try_from(failure: ConsumerFailure<Self>) -> Self {
-        if let ConsumerFailure::Fault(fault) = failure {
-            fault
-        } else {
-            throw!(())
-        }
-    }
-}
-
-impl TryFrom<ProducerFailure<ClosedMarketFault>> for ClosedMarketFault {
-    type Error = ();
-
-    #[inline]
-    #[throws(Self::Error)]
-    fn try_from(failure: ProducerFailure<Self>) -> Self {
-        if let ProducerFailure::Fault(fault) = failure {
-            fault
-        } else {
-            throw!(())
-        }
     }
 }

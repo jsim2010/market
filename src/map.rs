@@ -31,7 +31,7 @@ impl<C, G, F> crate::Consumer for Adapter<C, G, F>
 where
     C: crate::Consumer,
     G: From<C::Good>,
-    F: From<C::Failure> + crate::error::Failure,
+    F: From<C::Failure> + crate::Failure,
 {
     type Good = G;
     type Failure = F;
@@ -72,7 +72,7 @@ impl<P, G, F> crate::Producer for Converter<P, G, F>
 where
     P: crate::Producer,
     G: TryInto<P::Good>,
-    F: From<P::Failure> + crate::error::Failure,
+    F: From<P::Failure> + crate::Failure,
 {
     type Good = G;
     type Failure = F;
