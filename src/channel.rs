@@ -1,6 +1,5 @@
 //! Implements `Consumer` and `Producer` for various types of channels.
 use {
-    crate::{ClosedMarketFault, ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer},
     core::fmt::Debug,
     fehler::throws,
     std::sync::mpsc,
@@ -16,12 +15,12 @@ pub struct StdConsumer<G> {
     rx: mpsc::Receiver<G>,
 }
 
-impl<G> Consumer for StdConsumer<G>
+impl<G> crate::Consumer for StdConsumer<G>
 where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -37,12 +36,12 @@ impl<G> From<mpsc::Receiver<G>> for StdConsumer<G> {
     }
 }
 
-impl From<mpsc::TryRecvError> for ClassicalConsumerFailure<ClosedMarketFault> {
+impl From<mpsc::TryRecvError> for crate::error::ConsumerFailure<crate::error::ClosedMarketFault> {
     #[inline]
     fn from(value: mpsc::TryRecvError) -> Self {
         match value {
             mpsc::TryRecvError::Empty => Self::EmptyStock,
-            mpsc::TryRecvError::Disconnected => Self::Fault(ClosedMarketFault),
+            mpsc::TryRecvError::Disconnected => Self::Fault(crate::error::ClosedMarketFault),
         }
     }
 }
@@ -57,12 +56,12 @@ pub struct StdProducer<G> {
     tx: mpsc::Sender<G>,
 }
 
-impl<G> Producer for StdProducer<G>
+impl<G> crate::Producer for StdProducer<G>
 where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -78,10 +77,10 @@ impl<G> From<mpsc::Sender<G>> for StdProducer<G> {
     }
 }
 
-impl<G> From<mpsc::SendError<G>> for ClassicalProducerFailure<ClosedMarketFault> {
+impl<G> From<mpsc::SendError<G>> for crate::error::ProducerFailure<crate::error::ClosedMarketFault> {
     #[inline]
     fn from(_value: mpsc::SendError<G>) -> Self {
-        Self::Fault(ClosedMarketFault)
+        Self::Fault(crate::error::ClosedMarketFault)
     }
 }
 
@@ -97,12 +96,12 @@ where
     rx: crossbeam_channel::Receiver<G>,
 }
 
-impl<G> Consumer for CrossbeamConsumer<G>
+impl<G> crate::Consumer for CrossbeamConsumer<G>
 where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -121,12 +120,12 @@ where
     }
 }
 
-impl From<crossbeam_channel::TryRecvError> for ClassicalConsumerFailure<ClosedMarketFault> {
+impl From<crossbeam_channel::TryRecvError> for crate::error::ConsumerFailure<crate::error::ClosedMarketFault> {
     #[inline]
     fn from(value: crossbeam_channel::TryRecvError) -> Self {
         match value {
             crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
-            crossbeam_channel::TryRecvError::Disconnected => Self::Fault(ClosedMarketFault),
+            crossbeam_channel::TryRecvError::Disconnected => Self::Fault(crate::error::ClosedMarketFault),
         }
     }
 }
@@ -140,12 +139,12 @@ pub struct CrossbeamProducer<G> {
     tx: crossbeam_channel::Sender<G>,
 }
 
-impl<G> Producer for CrossbeamProducer<G>
+impl<G> crate::Producer for CrossbeamProducer<G>
 where
     G: Debug,
 {
     type Good = G;
-    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -161,12 +160,12 @@ impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
     }
 }
 
-impl<G> From<crossbeam_channel::TrySendError<G>> for ClassicalProducerFailure<ClosedMarketFault> {
+impl<G> From<crossbeam_channel::TrySendError<G>> for crate::error::ProducerFailure<crate::error::ClosedMarketFault> {
     #[inline]
     fn from(value: crossbeam_channel::TrySendError<G>) -> Self {
         match value {
             crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Fault(ClosedMarketFault),
+            crossbeam_channel::TrySendError::Disconnected(_) => Self::Fault(crate::error::ClosedMarketFault),
         }
     }
 }

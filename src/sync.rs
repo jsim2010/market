@@ -1,6 +1,5 @@
 //! Implements synchronization items.
 use {
-    crate::error::InfallibleFailure,
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
 };
@@ -25,21 +24,20 @@ impl Trigger {
 
 impl crate::Consumer for Trigger {
     type Good = ();
-    type Failure = InfallibleFailure;
+    type Failure = crate::error::InfallibleFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            throw!(InfallibleFailure)
+            throw!(crate::error::InfallibleFailure)
         }
     }
 }
 
-// TODO: Change to InfallibleProducerFailure.
 impl crate::Producer for Trigger {
     type Good = ();
-    type Failure = crate::ClassicalProducerFailure<never::Never>;
+    type Failure = crate::error::InfallibleFailure;
 
     #[inline]
     #[throws(Self::Failure)]

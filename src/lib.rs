@@ -16,16 +16,11 @@ pub mod process;
 pub mod sync;
 pub mod thread;
 
-pub use {
-    error::{Fault, InfallibleFailure, Failure, ClosedMarketFault, ClassicalConsumerFailure, ClassicalProducerFailure},
-    never::Never,
-};
+pub use error::{Failure, Fault};
 
 use {
-    core::{convert::TryFrom, fmt::Debug},
-    crossbeam_queue::SegQueue,
+    core::{convert::{TryFrom, TryInto}, fmt::Debug},
     fehler::{throw, throws},
-    std::error::Error,
 };
 
 /// Retrieves goods from a market.
@@ -151,15 +146,16 @@ pub trait Producer {
     }
 }
 
+// TODO: Collector and Distributor will need to be generic based on how they choose the order of actors.
 /// A [`Consumer`] that consumes goods of type `G` from multiple [`Consumer`]s.
 #[derive(Default)]
-pub struct Collector<G, F> 
+pub struct Collector<G, T> 
 {
     /// The [`Consumer`]s.
-    consumers: Vec<Box<dyn Consumer<Good = G, Failure = F>>>,
+    consumers: Vec<Box<dyn Consumer<Good = G, Failure = error::ConsumerFailure<T>>>>,
 }
 
-impl<G, F> Collector<G, F>
+impl<G, T> Collector<G, T>
 {
     /// Creates a new, empty [`Collector`].
     #[must_use]
@@ -176,35 +172,31 @@ impl<G, F> Collector<G, F>
     where
         C: Consumer + 'static,
         G: From<C::Good> + 'static,
-        F: From<C::Failure> + Failure + 'static,
+        T: TryFrom<error::ConsumerFailure<T>> + 'static,
+        error::ConsumerFailure<T>: From<C::Failure>,
     {
         self.consumers.push(Box::new(map::Adapter::new(consumer)));
     }
 }
 
-impl<G, F> Consumer for Collector<G, F>
+impl<G, T> Consumer for Collector<G, T>
 where
-    F: Failure,
+    T: TryFrom<error::ConsumerFailure<T>>,
 {
     type Good = G;
-    type Failure = F;
+    type Failure = error::ConsumerFailure<T>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        let mut result = Err(F::insufficient_stock());
+        let mut result = Err(error::ConsumerFailure::EmptyStock);
 
         for consumer in &self.consumers {
-            let mut is_finished = true;
             result = consumer.consume();
 
-            if let Err(ref failure) = result {
-                if failure.is_insufficient_stock() {
-                    is_finished = false;
-                }
-            }
-
-            if is_finished {
+            if let Err(error::ConsumerFailure::EmptyStock) = result {
+                // Nothing good or bad was found, continue searching.
+            } else {
                 break;
             }
         }
@@ -226,12 +218,10 @@ where
 /// Distributes goods to multiple producers.
 pub struct Distributor<G, T> {
     /// The producers.
-    producers: Vec<Box<dyn Producer<Good = G, Failure = ClassicalProducerFailure<T>>>>,
+    producers: Vec<Box<dyn Producer<Good = G, Failure = error::ProducerFailure<T>>>>,
 }
 
 impl<G, T> Distributor<G, T>
-where
-    T: Eq + 'static,
 {
     /// Creates a new, empty [`Distributor`].
     #[must_use]
@@ -244,9 +234,10 @@ where
     #[inline]
     pub fn push<P>(&mut self, producer: std::rc::Rc<P>)
     where
-        P: Producer<Failure = ClassicalProducerFailure<T>> + 'static,
-        G: core::convert::TryInto<P::Good> + 'static,
-        T: TryFrom<ClassicalProducerFailure<T>> + From<Fault<P::Failure>> + Error + 'static,
+        P: Producer + 'static,
+        G: TryInto<P::Good> + 'static,
+        error::ProducerFailure<T>: From<P::Failure>,
+        T: TryFrom<error::ProducerFailure<T>> + 'static,
     {
         self.producers.push(Box::new(map::Converter::new(producer)));
     }
@@ -270,11 +261,11 @@ impl<G, T> Default for Distributor<G, T> {
 
 impl<G, T> Producer for Distributor<G, T>
 where
-    T: TryFrom<ClassicalProducerFailure<T>> + Eq + Error + 'static,
+    T: TryFrom<error::ProducerFailure<T>>,
     G: Clone,
 {
     type Good = G;
-    type Failure = ClassicalProducerFailure<T>;
+    type Failure = error::ProducerFailure<T>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -282,131 +273,5 @@ where
         for producer in &self.producers {
             producer.produce(good.clone())?;
         }
-    }
-}
-
-/// Defines a queue with unlimited size that implements [`Consumer`] and [`Producer`].
-///
-/// An [`UnlimitedQueue`] can be closed, which prevents the [`Producer`] from producing new goods while allowing the [`Consumer`] to consume only the remaining goods on the queue.
-#[derive(Debug)]
-pub struct UnlimitedQueue<G> {
-    /// The queue.
-    queue: SegQueue<G>,
-    /// A trigger to close the queue.
-    closure: sync::Trigger,
-}
-
-impl<G> UnlimitedQueue<G> {
-    /// Creates a new empty [`UnlimitedQueue`].
-    #[must_use]
-    #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Closes `self`.
-    #[inline]
-    pub fn close(&self) {
-        #[allow(clippy::expect_used)] // Trigger::produce() will not fail.
-        self.closure.produce(()).expect("triggering closure");
-    }
-}
-
-impl<G> Consumer for UnlimitedQueue<G>
-where
-    G: Debug,
-{
-    type Good = G;
-    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        if let Some(good) = self.queue.pop() {
-            good
-        } else if self.closure.consume().is_ok() {
-            throw!(ClassicalConsumerFailure::Fault(ClosedMarketFault));
-        } else {
-            throw!(ClassicalConsumerFailure::EmptyStock);
-        }
-    }
-}
-
-impl<G> Default for UnlimitedQueue<G> {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            queue: SegQueue::new(),
-            closure: sync::Trigger::new(),
-        }
-    }
-}
-
-impl<G> Producer for UnlimitedQueue<G>
-where
-    G: Debug,
-{
-    type Good = G;
-    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        if self.closure.consume().is_ok() {
-            throw!(ClassicalProducerFailure::Fault(ClosedMarketFault));
-        } else {
-            self.queue.push(good);
-        }
-    }
-}
-
-/// An unlimited queue with a producer and consumer that are always functional.
-#[derive(Debug, Default)]
-pub struct PermanentQueue<G> {
-    /// The queue.
-    queue: SegQueue<G>,
-}
-
-impl<G> PermanentQueue<G> {
-    /// Creates a new [`PermanentQueue`].
-    #[must_use]
-    #[inline]
-    pub fn new() -> Self {
-        Self {
-            queue: SegQueue::new(),
-        }
-    }
-}
-
-impl<G> Consumer for PermanentQueue<G>
-where
-    G: Debug,
-{
-    type Good = G;
-    type Failure = InfallibleFailure;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        if let Some(good) = self.queue.pop() {
-            good
-        } else {
-            throw!(InfallibleFailure)
-        }
-    }
-}
-
-impl<G> Producer for PermanentQueue<G>
-where
-    G: Debug,
-{
-    type Good = G;
-    type Failure = ClassicalProducerFailure<Never>;
-
-    // TODO: Find a way to indicate this never fails.
-    #[inline]
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        self.queue.push(good);
     }
 }

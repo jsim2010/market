@@ -1,25 +1,18 @@
 //! Implements `Consumer` and `Producer` for `std::io::Read` and `std::io::Write` trait objects.
 use {
-    crate::{
-        channel::{CrossbeamConsumer, CrossbeamProducer},
-        thread::Thread,
-        ClosedMarketFault, ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer,
-    },
-    conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
         cell::RefCell,
         fmt::Debug,
         marker::PhantomData,
         sync::atomic::{AtomicBool, Ordering},
     },
-    crossbeam_channel::TryRecvError,
     fehler::{throw, throws},
     log::{error, warn},
     std::{
-        io::{self, ErrorKind, Read, Write},
+        io::{ErrorKind, Read, Write},
         panic::UnwindSafe,
         sync::Arc,
-        thread::{self, JoinHandle},
+        thread::JoinHandle,
     },
 };
 
@@ -27,28 +20,28 @@ use {
 #[derive(Debug, thiserror::Error)]
 pub enum ReadFault<G>
 where
-    G: AssembleFrom<u8> + Debug,
-    <G as AssembleFrom<u8>>::Error: 'static,
+    G: conventus::AssembleFrom<u8> + Debug,
+    <G as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     /// Unable to assemble the good from bytes.
     #[error("{0}")]
     // This cannot be #[from] as it conflicts with From<T> for T
-    Assemble(#[source] <G as AssembleFrom<u8>>::Error),
+    Assemble(#[source] <G as conventus::AssembleFrom<u8>>::Error),
     /// Reader was closed.
     #[error("reader was closed")]
     Closed,
 }
 
-impl<G> core::convert::TryFrom<ClassicalConsumerFailure<ReadFault<G>>> for ReadFault<G>
+impl<G> core::convert::TryFrom<crate::error::ConsumerFailure<ReadFault<G>>> for ReadFault<G>
 where
-    G: AssembleFrom<u8> + Debug,
+    G: conventus::AssembleFrom<u8> + Debug,
 {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
-        if let ClassicalConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::error::ConsumerFailure<Self>) -> Self {
+        if let crate::error::ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -82,13 +75,13 @@ impl<G> Reader<G> {
     }
 }
 
-impl<G> Consumer for Reader<G>
+impl<G> crate::Consumer for Reader<G>
 where
-    G: AssembleFrom<u8> + Debug +'static,
-    <G as AssembleFrom<u8>>::Error: 'static,
+    G: conventus::AssembleFrom<u8> + Debug +'static,
+    <G as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = G;
-    type Failure = ClassicalConsumerFailure<ReadFault<G>>;
+    type Failure = crate::error::ConsumerFailure<ReadFault<G>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -100,8 +93,8 @@ where
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
-            AssembleFailure::Incomplete => ClassicalConsumerFailure::EmptyStock,
-            AssembleFailure::Error(e) => ClassicalConsumerFailure::Fault(ReadFault::Assemble(e)),
+            conventus::AssembleFailure::Incomplete => crate::error::ConsumerFailure::EmptyStock,
+            conventus::AssembleFailure::Error(e) => crate::error::ConsumerFailure::Fault(ReadFault::Assemble(e)),
         })?
     }
 }
@@ -110,24 +103,24 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError<G>
 where
-    G: AssembleFrom<u8> + Debug,
-    <G as AssembleFrom<u8>>::Error: 'static,
+    G: conventus::AssembleFrom<u8> + Debug,
+    <G as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     /// Unable to assemble the good from bytes.
     #[error("{0}")]
     // This cannot be #[from] as it conflicts with From<T> for T
-    Assemble(#[source] <G as AssembleFrom<u8>>::Error),
+    Assemble(#[source] <G as conventus::AssembleFrom<u8>>::Error),
     /// Reader was closed.
     #[error("reader was closed")]
     Closed,
 }
 
-impl<G> From<ClosedMarketFault> for ReadError<G>
+impl<G> From<crate::error::ClosedMarketFault> for ReadError<G>
 where
-    G: AssembleFrom<u8> + Debug,
+    G: conventus::AssembleFrom<u8> + Debug,
 {
     #[inline]
-    fn from(_: ClosedMarketFault) -> Self {
+    fn from(_: crate::error::ClosedMarketFault) -> Self {
         Self::Closed
     }
 }
@@ -156,20 +149,20 @@ impl<G> Writer<G> {
     }
 }
 
-impl<G> Producer for Writer<G>
+impl<G> crate::Producer for Writer<G>
 where
-    G: DisassembleInto<u8> + Debug,
-    <G as DisassembleInto<u8>>::Error: 'static,
+    G: conventus::DisassembleInto<u8> + Debug,
+    <G as conventus::DisassembleInto<u8>>::Error: 'static,
 {
     type Good = G;
-    type Failure = ClassicalProducerFailure<WriteError<G>>;
+    type Failure = crate::error::ProducerFailure<WriteError<G>>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.byte_producer
             .produce_all(good.disassemble_into().map_err(WriteError::Disassemble)?)
-            .map_err(ClassicalProducerFailure::map_into)?
+            .map_err(crate::error::ProducerFailure::map_into)?
     }
 }
 
@@ -177,28 +170,28 @@ where
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError<G>
 where
-    G: DisassembleInto<u8> + Debug,
-    <G as DisassembleInto<u8>>::Error: 'static,
+    G: conventus::DisassembleInto<u8> + Debug,
+    <G as conventus::DisassembleInto<u8>>::Error: 'static,
 {
     /// Unable to disassemble the good into bytes.
     #[error("{0}")]
     // This cannot be #[from] as it conflicts with From<T> for T
-    Disassemble(#[source] <G as DisassembleInto<u8>>::Error),
+    Disassemble(#[source] <G as conventus::DisassembleInto<u8>>::Error),
     /// Writer was closed.
     #[error("writer was closed")]
     Closed,
 }
 
-impl<G> core::convert::TryFrom<ClassicalProducerFailure<WriteError<G>>> for WriteError<G>
+impl<G> core::convert::TryFrom<crate::error::ProducerFailure<WriteError<G>>> for WriteError<G>
 where
-    G: DisassembleInto<u8> + Debug,
+    G: conventus::DisassembleInto<u8> + Debug,
 {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
-        if let ClassicalProducerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::error::ProducerFailure<Self>) -> Self {
+        if let crate::error::ProducerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -206,12 +199,12 @@ where
     }
 }
 
-impl<G> From<ClosedMarketFault> for WriteError<G>
+impl<G> From<crate::error::ClosedMarketFault> for WriteError<G>
 where
-    G: DisassembleInto<u8> + Debug,
+    G: conventus::DisassembleInto<u8> + Debug,
 {
     #[inline]
-    fn from(_: ClosedMarketFault) -> Self {
+    fn from(_: crate::error::ClosedMarketFault) -> Self {
         Self::Closed
     }
 }
@@ -222,7 +215,7 @@ where
 #[derive(Debug)]
 struct ByteConsumer {
     /// Consumes bytes from the reading thread.
-    consumer: CrossbeamConsumer<u8>,
+    consumer: crate::channel::CrossbeamConsumer<u8>,
     /// The thread that reads bytes.
     join_handle: Option<JoinHandle<()>>,
     /// If the thread is quitting.
@@ -237,16 +230,19 @@ impl ByteConsumer {
         let is_quitting = Arc::new(AtomicBool::new(false));
         let quitting = Arc::clone(&is_quitting);
 
-        let join_handle = thread::spawn(move || {
+        let join_handle = std::thread::spawn(move || {
             let mut buffer = [0; 1024];
-            let producer: CrossbeamProducer<u8> = tx.into();
+            let producer: crate::channel::CrossbeamProducer<u8> = tx.into();
 
             while !quitting.load(Ordering::Relaxed) {
                 match reader.read(&mut buffer) {
                     Ok(len) => {
                         let (bytes, _) = buffer.split_at(len);
 
-                        if let Err(error) = producer.force_all(bytes.to_vec()) {
+                        if let Err(error) = {
+                            use crate::Producer as _;
+                            producer.force_all(bytes.to_vec())
+                        } {
                             error!("`ByteConsumer` failed to store bytes: {}", error);
                         }
                     }
@@ -265,9 +261,9 @@ impl ByteConsumer {
     }
 }
 
-impl Consumer for ByteConsumer {
+impl crate::Consumer for ByteConsumer {
     type Good = u8;
-    type Failure = ClassicalConsumerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ConsumerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -293,13 +289,13 @@ impl Drop for ByteConsumer {
 #[derive(Debug)]
 struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
-    producer: CrossbeamProducer<u8>,
+    producer: crate::channel::CrossbeamProducer<u8>,
     /// Consumes errors from the writing thread.
-    error_consumer: CrossbeamConsumer<io::Error>,
+    error_consumer: crate::channel::CrossbeamConsumer<std::io::Error>,
     /// If `Self` is currently being dropped.
     is_dropping: Arc<AtomicBool>,
     /// The thread.
-    thread: Thread<(), ClosedMarketFault>,
+    thread: crate::thread::Thread<(), crate::error::ClosedMarketFault>,
 }
 
 impl ByteProducer {
@@ -314,7 +310,7 @@ impl ByteProducer {
         let is_dropping = Arc::new(AtomicBool::new(false));
         let is_quitting = Arc::clone(&is_dropping);
 
-        let thread = Thread::new(move || {
+        let thread = crate::thread::Thread::new(move || {
             let mut buffer = Vec::new();
 
             while !is_quitting.load(Ordering::Relaxed) {
@@ -323,11 +319,11 @@ impl ByteProducer {
                         Ok(byte) => {
                             buffer.push(byte);
                         }
-                        Err(TryRecvError::Empty) => {
+                        Err(crossbeam_channel::TryRecvError::Empty) => {
                             break;
                         }
-                        Err(TryRecvError::Disconnected) => {
-                            if let Err(send_error) = err_tx.send(io::Error::new(
+                        Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                            if let Err(send_error) = err_tx.send(std::io::Error::new(
                                 ErrorKind::Other,
                                 "failed to retrieve bytes to write",
                             )) {
@@ -375,15 +371,18 @@ impl Drop for ByteProducer {
     fn drop(&mut self) {
         self.is_dropping.store(true, Ordering::Relaxed);
 
-        if let Err(error) = self.thread.demand() {
+        if let Err(error) = {
+            use crate::Consumer as _;
+            self.thread.demand()
+        } {
             error!("Unable to join `ByteProducer` thread: {:?}", error);
         }
     }
 }
 
-impl Producer for ByteProducer {
+impl crate::Producer for ByteProducer {
     type Good = u8;
-    type Failure = ClassicalProducerFailure<ClosedMarketFault>;
+    type Failure = crate::error::ProducerFailure<crate::error::ClosedMarketFault>;
 
     #[inline]
     #[throws(Self::Failure)]

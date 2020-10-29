@@ -4,81 +4,52 @@
 //! 1) Failures: These indicate that an action was not successful.
 //! 2) Faults: These are a subset of Failrues that indicate that the market is currently in a state where no attempted action will be successful until the state is changed (if possible).
 use {
-    conventus::AssembleFailure,
     core::{convert::{Infallible, TryFrom}, fmt::{Display, Debug}},
-    never::Never,
     fehler::{throw, throws},
     std::error::Error,
-    thiserror::Error as ThisError,
 };
 
 /// Describes the failures that could occur during a consumption or production.
 pub trait Failure: Sized {
     /// Describes the fault that could occur.
     type Fault: TryFrom<Self>;
-
-    fn insufficient_stock() -> Self;
-
-    fn is_insufficient_stock(&self) -> bool;
 }
 
 /// A shortcut for referring to the fault of `F`.
 pub type Fault<F> = <F as Failure>::Fault;
 
 /// A `Consumer` failed to consume a good.
-// Do not derive ThisError so that ClassicalConsumerFailure can be created without requiring it impl Display.
+// thiserror::Error is not derived so that T is not required to impl Display. see www.github.com/dtolnay/thiserror/pull/107
 #[derive(Debug, Hash)]
-pub enum ClassicalConsumerFailure<T>
+pub enum ConsumerFailure<T>
 {
     /// The stock of the market is empty.
     EmptyStock,
     /// A fault was thrown during consumption.
-    ///
-    /// Indicates the [`Consumer`] is currently in a state where it will not consume any more goods.
     Fault(T),
 }
 
-impl<T> Failure for ClassicalConsumerFailure<T>
-where
-    T: TryFrom<Self>,
+#[allow(clippy::use_self)] // False positive for ConsumerFailure<T>.
+impl<T> ConsumerFailure<T>
 {
-    type Fault = T;
-
-    fn insufficient_stock() -> Self {
-        Self::EmptyStock
-    }
-
-    fn is_insufficient_stock(&self) -> bool {
-        if let Self::EmptyStock = self {
-            true
-        } else {
-            false
-        }
-    }
-}
-
-#[allow(clippy::use_self)] // False positive for ClassicalConsumerFailure<T>.
-impl<T> ClassicalConsumerFailure<T>
-where
-    T: Error,
-{
-    // This is done because From<ClassicalConsumerFailure<T>> for ClassicalConsumerFailure<U> cannot.
-    /// Converts `ClassicalConsumerFailure<T>` into `ClassicalConsumerFailure<U>`.
+    // This is done because From<ConsumerFailure<T>> for ConsumerFailure<U> cannot.
+    /// Converts `ConsumerFailure<T>` into `ConsumerFailure<U>`.
     #[inline]
-    pub fn map_into<U>(self) -> ClassicalConsumerFailure<U>
+    pub fn map_into<U>(self) -> ConsumerFailure<U>
     where
-        U: Error + From<T>,
+        U: From<T>,
     {
         match self {
-            Self::EmptyStock => ClassicalConsumerFailure::EmptyStock,
-            Self::Fault(fault) => ClassicalConsumerFailure::Fault(fault.into()),
+            Self::EmptyStock => ConsumerFailure::EmptyStock,
+            Self::Fault(fault) => ConsumerFailure::Fault(fault.into()),
         }
     }
 }
 
-impl<T> Display for ClassicalConsumerFailure<T>
+// Display and Error are implemented manually due to issue with thiserror::Error described above.
+impl<T> Display for ConsumerFailure<T>
 where
-    T: Debug + Display,
+    T: Display,
 {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -89,23 +60,31 @@ where
     }
 }
 
-// TODO: Ideally could do From<AssembleFailure<E>> for ClassicalConsumerFailure<F> where F: From<E>. However this is overriden by From<E> for ClassicalConsumerFailure<E> since there is no way to indicate F != AssembleFailure<E>.
-impl<T> From<AssembleFailure<T>> for ClassicalConsumerFailure<T>
+impl<T> Error for ConsumerFailure<T>
 where
-    T: Error,
+    T: Debug + Display,
+{}
+
+impl<T> Failure for ConsumerFailure<T>
+where
+    T: TryFrom<Self>,
+{
+    type Fault = T;
+}
+
+// TODO: Ideally could do From<conventus::AssembleFailure<E>> for ConsumerFailure<F> where F: From<E>. However this is overriden by From<E> for ConsumerFailure<E> since there is no way to indicate F != conventus::AssembleFailure<E>.
+impl<T> From<conventus::AssembleFailure<T>> for ConsumerFailure<T>
 {
     #[inline]
-    fn from(failure: AssembleFailure<T>) -> Self {
+    fn from(failure: conventus::AssembleFailure<T>) -> Self {
         match failure {
-            AssembleFailure::Incomplete => Self::EmptyStock,
-            AssembleFailure::Error(error) => Self::Fault(error),
+            conventus::AssembleFailure::Incomplete => Self::EmptyStock,
+            conventus::AssembleFailure::Error(error) => Self::Fault(error),
         }
     }
 }
 
-impl<T> From<T> for ClassicalConsumerFailure<T>
-where
-    T: Error,
+impl<T> From<T> for ConsumerFailure<T>
 {
     #[inline]
     fn from(fault: T) -> Self {
@@ -128,20 +107,12 @@ impl TryFrom<InfallibleFailure> for Infallible {
 
 impl Failure for InfallibleFailure {
     type Fault = Infallible;
-
-    fn insufficient_stock() -> Self {
-        Self
-    }
-
-    fn is_insufficient_stock(&self) -> bool {
-        true
-    }
 }
 
 /// A `Producer` failed to produce a good.
-// Do not derive ThisError so that ClassicalProducerFailure can be created without requiring impl Display.
+// Do not derive thiserror::Error so that ProducerFailure can be created without requiring impl Display.
 #[derive(Debug, Hash)]
-pub enum ClassicalProducerFailure<T>
+pub enum ProducerFailure<T>
 {
     /// The stock of the market is full.
     FullStock,
@@ -151,44 +122,30 @@ pub enum ClassicalProducerFailure<T>
     Fault(T),
 }
 
-impl<T> Failure for ClassicalProducerFailure<T>
+impl<T> Failure for ProducerFailure<T>
 where
     T: TryFrom<Self>,
 {
     type Fault = T;
-
-    fn insufficient_stock() -> Self {
-        Self::FullStock
-    }
-
-    fn is_insufficient_stock(&self) -> bool {
-        if let Self::FullStock = self {
-            true
-        } else {
-            false
-        }
-    }
 }
 
-#[allow(clippy::use_self)] // False positive for ClassicalProducerFailure<T>.
-impl<T> ClassicalProducerFailure<T>
-where
-    T: Error,
+#[allow(clippy::use_self)] // False positive for ProducerFailure<T>.
+impl<T> ProducerFailure<T>
 {
-    /// Converts `self` into `ClassicalProducerFailure<U>`
+    /// Converts `self` into `ProducerFailure<U>`
     #[inline]
-    pub fn map_into<U>(self) -> ClassicalProducerFailure<U>
+    pub fn map_into<U>(self) -> ProducerFailure<U>
     where
-        U: Error + From<T>,
+        U: From<T>,
     {
         match self {
-            Self::FullStock => ClassicalProducerFailure::FullStock,
-            Self::Fault(fault) => ClassicalProducerFailure::Fault(fault.into()),
+            Self::FullStock => ProducerFailure::FullStock,
+            Self::Fault(fault) => ProducerFailure::Fault(fault.into()),
         }
     }
 }
 
-impl<T> Display for ClassicalProducerFailure<T>
+impl<T> Display for ProducerFailure<T>
 where
     T: Display,
 {
@@ -201,9 +158,7 @@ where
     }
 }
 
-impl<T> From<T> for ClassicalProducerFailure<T>
-where
-    T: Error,
+impl<T> From<T> for ProducerFailure<T>
 {
     #[inline]
     fn from(fault: T) -> Self {
@@ -212,17 +167,17 @@ where
 }
 
 /// An error interacting with a market due to the market being closed.
-#[derive(Clone, Copy, Debug, Eq, ThisError, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, thiserror::Error, PartialEq)]
 #[error("market is closed")]
 pub struct ClosedMarketFault;
 
-impl TryFrom<ClassicalConsumerFailure<ClosedMarketFault>> for ClosedMarketFault {
+impl TryFrom<ConsumerFailure<ClosedMarketFault>> for ClosedMarketFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
-        if let ClassicalConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: ConsumerFailure<Self>) -> Self {
+        if let ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -230,27 +185,13 @@ impl TryFrom<ClassicalConsumerFailure<ClosedMarketFault>> for ClosedMarketFault 
     }
 }
 
-impl TryFrom<ClassicalProducerFailure<ClosedMarketFault>> for ClosedMarketFault {
+impl TryFrom<ProducerFailure<ClosedMarketFault>> for ClosedMarketFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
-        if let ClassicalProducerFailure::Fault(fault) = failure {
-            fault
-        } else {
-            throw!(())
-        }
-    }
-}
-
-impl TryFrom<ClassicalProducerFailure<Never>> for Never {
-    type Error = ();
-
-    #[inline]
-    #[throws(Self::Error)]
-    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
-        if let ClassicalProducerFailure::Fault(fault) = failure {
+    fn try_from(failure: ProducerFailure<Self>) -> Self {
+        if let ProducerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

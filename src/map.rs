@@ -1,9 +1,8 @@
 //! Implements actors that map goods and errors.
 use {
-    crate::{error, Consumer, ClassicalProducerFailure, Producer},
     core::{convert::TryInto, marker::PhantomData},
     fehler::throws,
-    std::{error::Error, rc::Rc},
+    std::rc::Rc,
 };
 
 /// A [`Consumer`] that maps the consumed good to a new good.
@@ -28,11 +27,11 @@ impl<C, G, F> Adapter<C, G, F> {
     }
 }
 
-impl<C, G, F> Consumer for Adapter<C, G, F>
+impl<C, G, F> crate::Consumer for Adapter<C, G, F>
 where
-    C: Consumer,
+    C: crate::Consumer,
     G: From<C::Good>,
-    F: From<C::Failure> + error::Failure,
+    F: From<C::Failure> + crate::error::Failure,
 {
     type Good = G;
     type Failure = F;
@@ -49,34 +48,34 @@ where
 
 /// A [`Producer`] that maps the produced good to a new good.
 #[derive(Debug)]
-pub(crate) struct Converter<P, G, T> {
+pub(crate) struct Converter<P, G, F> {
     /// The original producer.
     producer: Rc<P>,
     /// The desired type of `Self::Good`.
     good: PhantomData<G>,
-    /// The desired type of `Self::Error`.
-    fault: PhantomData<T>,
+    /// The desired type of `Self::Failure`.
+    failure: PhantomData<F>,
 }
 
-impl<P, G, T> Converter<P, G, T> {
+impl<P, G, F> Converter<P, G, F> {
     /// Creates a new [`Converter`].
     pub(crate) const fn new(producer: Rc<P>) -> Self {
         Self {
             producer,
             good: PhantomData,
-            fault: PhantomData,
+            failure: PhantomData,
         }
     }
 }
 
-impl<P, G, T> Producer for Converter<P, G, T>
+impl<P, G, F> crate::Producer for Converter<P, G, F>
 where
-    P: Producer<Failure = ClassicalProducerFailure<T>>,
+    P: crate::Producer,
     G: TryInto<P::Good>,
-    T: core::convert::TryFrom<ClassicalProducerFailure<T>> + From<crate::error::Fault<P::Failure>> + Eq + Error,
+    F: From<P::Failure> + crate::error::Failure,
 {
     type Good = G;
-    type Failure = ClassicalProducerFailure<T>;
+    type Failure = F;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -84,7 +83,7 @@ where
         if let Ok(converted_good) = good.try_into() {
             self.producer
                 .produce(converted_good)
-                .map_err(ClassicalProducerFailure::map_into)?
+                .map_err(Self::Failure::from)?
         }
     }
 }

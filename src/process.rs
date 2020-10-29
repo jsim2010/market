@@ -1,17 +1,10 @@
 //! Implements `Consumer` and `Producer` for the stdio's of a process.
 use {
-    crate::{
-        io::{Reader, Writer},
-        ClassicalConsumerFailure, Consumer, ClassicalProducerFailure, Producer,
-    },
-    conventus::{AssembleFrom, DisassembleInto},
     core::{convert::TryFrom, cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
     std::{
-        io,
         process::{Child, Command, ExitStatus, Stdio},
     },
-    thiserror::Error as ThisError,
 };
 
 /// Represents a process with piped stdio's.
@@ -22,11 +15,11 @@ use {
 #[derive(Debug)]
 pub struct Process<I, O, E> {
     /// The stdin of the process.
-    input: Writer<I>,
+    input: crate::io::Writer<I>,
     /// The stdout of the process.
-    output: Reader<O>,
+    output: crate::io::Reader<O>,
     /// The stderr of the process.
-    error: Reader<E>,
+    error: crate::io::Reader<E>,
     /// The `Waiter` of the process.
     waiter: Waiter,
 }
@@ -45,13 +38,13 @@ impl<I, O, E> Process<I, O, E> {
             .map_err(|error| CreateProcessError::new(&command_string, error))?;
 
         Self {
-            input: Writer::new(child.stdin.take().ok_or_else(|| {
+            input: crate::io::Writer::new(child.stdin.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stdin".to_string()))
             })?),
-            output: Reader::new(child.stdout.take().ok_or_else(|| {
+            output: crate::io::Reader::new(child.stdout.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stdout".to_string()))
             })?),
-            error: Reader::new(child.stderr.take().ok_or_else(|| {
+            error: crate::io::Reader::new(child.stderr.take().ok_or_else(|| {
                 CreateProcessError::new(&command_string, UncapturedStdioError("stderr".to_string()))
             })?),
             waiter: Waiter {
@@ -63,7 +56,7 @@ impl<I, O, E> Process<I, O, E> {
 
     /// Returns the `Consumer` of the stderr pipe.
     #[inline]
-    pub const fn stderr(&self) -> &Reader<E> {
+    pub const fn stderr(&self) -> &crate::io::Reader<E> {
         &self.error
     }
 
@@ -74,13 +67,13 @@ impl<I, O, E> Process<I, O, E> {
     }
 }
 
-impl<I, O, E> Consumer for Process<I, O, E>
+impl<I, O, E> crate::Consumer for Process<I, O, E>
 where
-    O: AssembleFrom<u8> + Debug + 'static,
-    <O as AssembleFrom<u8>>::Error: 'static,
+    O: conventus::AssembleFrom<u8> + Debug + 'static,
+    <O as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Failure = ClassicalConsumerFailure<crate::io::ReadFault<O>>;
+    type Failure = crate::error::ConsumerFailure<crate::io::ReadFault<O>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -89,13 +82,13 @@ where
     }
 }
 
-impl<I, O, E> Producer for Process<I, O, E>
+impl<I, O, E> crate::Producer for Process<I, O, E>
 where
-    I: DisassembleInto<u8> + Debug,
-    <I as DisassembleInto<u8>>::Error: 'static,
+    I: conventus::DisassembleInto<u8> + Debug,
+    <I as conventus::DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
-    type Failure = ClassicalProducerFailure<crate::io::WriteError<I>>;
+    type Failure = crate::error::ProducerFailure<crate::io::WriteError<I>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -115,9 +108,9 @@ pub struct Waiter {
     child: RefCell<Child>,
 }
 
-impl Consumer for Waiter {
+impl crate::Consumer for Waiter {
     type Good = ExitStatus;
-    type Failure = ClassicalConsumerFailure<WaitFault>;
+    type Failure = crate::error::ConsumerFailure<WaitFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -133,13 +126,13 @@ impl Consumer for Waiter {
         {
             status
         } else {
-            throw!(ClassicalConsumerFailure::EmptyStock);
+            throw!(crate::error::ConsumerFailure::EmptyStock);
         }
     }
 }
 
 /// An error creating a `Process`.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("Failed to create `{command}`: {error}")]
 pub struct CreateProcessError {
     /// The command attempting to be created.
@@ -162,38 +155,38 @@ impl CreateProcessError {
 }
 
 /// An type of error creating a `Process`.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 pub enum CreateProcessErrorType {
     /// I/O error.
     #[error(transparent)]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
     /// Stdio is not captured.
     #[error(transparent)]
     UncapturedStdio(#[from] UncapturedStdioError),
 }
 
 /// An error capturing a stdio.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("`{0}` is not captured")]
 pub struct UncapturedStdioError(String);
 
 /// An error waiting for a `Process` to exit.
-#[derive(Debug, ThisError)]
+#[derive(Debug, thiserror::Error)]
 #[error("Failed to wait for `{command}`: {error}")]
 pub struct WaitFault {
     /// The command of the process.
     command: String,
     /// The error.
-    error: io::Error,
+    error: std::io::Error,
 }
 
-impl TryFrom<ClassicalConsumerFailure<WaitFault>> for WaitFault {
+impl TryFrom<crate::error::ConsumerFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
-        if let ClassicalConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::error::ConsumerFailure<Self>) -> Self {
+        if let crate::error::ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -201,13 +194,13 @@ impl TryFrom<ClassicalConsumerFailure<WaitFault>> for WaitFault {
     }
 }
 
-impl TryFrom<ClassicalProducerFailure<WaitFault>> for WaitFault {
+impl TryFrom<crate::error::ProducerFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: ClassicalProducerFailure<Self>) -> Self {
-        if let ClassicalProducerFailure::Fault(fault) = failure {
+    fn try_from(failure: crate::error::ProducerFailure<Self>) -> Self {
+        if let crate::error::ProducerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

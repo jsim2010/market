@@ -1,27 +1,21 @@
 //! Implements `Consumer` for thread functionality.
 use {
-    crate::{
-        channel::{CrossbeamConsumer, CrossbeamProducer},
-        ClassicalConsumerFailure, Consumer, Producer,
-    },
     core::fmt::Debug,
     fehler::{throw, throws},
     log::error,
-    parse_display::Display as ParseDisplay,
     std::{
         any::Any,
         error::Error,
         panic::{self, UnwindSafe},
         thread::{self, JoinHandle},
     },
-    thiserror::Error as ThisError,
 };
 
 /// The type returned by a panic.
 type Panic = Box<dyn Any + Send + 'static>;
 
 /// An error while consuming the outcome of a thread.
-#[derive(Debug, Eq, PartialEq, ThisError)]
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
 pub enum Fault<E>
 where
     E: Debug + Error + 'static,
@@ -34,16 +28,16 @@ where
     Error(E),
 }
 
-impl<E> core::convert::TryFrom<ClassicalConsumerFailure<Fault<E>>> for Fault<E>
+impl<E> core::convert::TryFrom<crate::error::ConsumerFailure<Fault<E>>> for Fault<E>
 where
     E: Debug + Error + 'static,
 {
     type Error = ();
 
     #[inline]
-    #[throws(<Self as core::convert::TryFrom<ClassicalConsumerFailure<Self>>>::Error)]
-    fn try_from(failure: ClassicalConsumerFailure<Self>) -> Self {
-        if let ClassicalConsumerFailure::Fault(fault) = failure {
+    #[throws(<Self as core::convert::TryFrom<crate::error::ConsumerFailure<Self>>>::Error)]
+    fn try_from(failure: crate::error::ConsumerFailure<Self>) -> Self {
+        if let crate::error::ConsumerFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -61,7 +55,7 @@ where
     T: Debug,
 {
     /// Consumes the outcome of the thread.
-    consumer: CrossbeamConsumer<Outcome<T, E>>,
+    consumer: crate::channel::CrossbeamConsumer<Outcome<T, E>>,
     /// The handle to the thread.
     handle: JoinHandle<()>,
 }
@@ -82,8 +76,11 @@ where
         Self {
             handle: thread::spawn(move || {
                 // Although force is preferable to produce, force requires the good impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
-                if let Err(fault) = CrossbeamProducer::from(tx)
+                if let Err(fault) = {
+                    use crate::Producer as _;
+                    crate::channel::CrossbeamProducer::from(tx)
                     .produce(Outcome::from(panic::catch_unwind(|| (call)())))
+                }
                 {
                     error!(
                         "Failed to send outcome of `{}` thread: {}",
@@ -97,13 +94,13 @@ where
     }
 }
 
-impl<O, E> Consumer for Thread<O, E>
+impl<O, E> crate::Consumer for Thread<O, E>
 where
-    E: core::convert::TryFrom<ClassicalConsumerFailure<E>> + Eq + Error + 'static,
+    E: core::convert::TryFrom<crate::error::ConsumerFailure<E>> + Eq + Error + 'static,
     O: Debug,
 {
     type Good = O;
-    type Failure = ClassicalConsumerFailure<Fault<E>>;
+    type Failure = crate::error::ConsumerFailure<Fault<E>>;
 
     #[throws(Self::Failure)]
     #[inline]
@@ -111,21 +108,21 @@ where
         match self.consumer.consume() {
             Ok(output) => match output {
                 Outcome::Success(success) => success,
-                Outcome::Error(error) => throw!(ClassicalConsumerFailure::Fault(Fault::Error(error))),
+                Outcome::Error(error) => throw!(Self::Failure::Fault(Fault::Error(error))),
                 #[allow(clippy::panic)]
                 // Propogating the panic that occurred in call provided by third-party.
                 Outcome::Panic(panic) => panic!(panic),
             },
             Err(failure) => match failure {
-                ClassicalConsumerFailure::EmptyStock => throw!(ClassicalConsumerFailure::EmptyStock),
-                ClassicalConsumerFailure::Fault(_) => throw!(Fault::Dropped),
+                crate::error::ConsumerFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
+                crate::error::ConsumerFailure::Fault(_) => throw!(Fault::Dropped),
             },
         }
     }
 }
 
 /// A `Result` with the additional possibility of a caught panic.
-#[derive(Debug, ParseDisplay)]
+#[derive(Debug, parse_display::Display)]
 enum Outcome<T, E> {
     /// The thread call completed sucessfully.
     #[display("{0}")]
