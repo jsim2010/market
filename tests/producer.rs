@@ -1,11 +1,7 @@
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
-    market::{ProduceFailure, Producer, Recall},
-    std::{
-        error::Error,
-        fmt::{self, Display},
-    },
+    market::{producer_fault, ProduceFailure, Producer},
 };
 
 struct MockProducer {
@@ -34,9 +30,9 @@ impl MockProducer {
 
 impl Producer for MockProducer {
     type Good = u8;
-    type Fault = MockFault;
+    type Failure = ProduceFailure<MockFault>;
 
-    #[throws(ProduceFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn produce(&self, _good: Self::Good) {
         if self.will_fail {
             throw!(ProduceFailure::Fault(MockFault));
@@ -50,33 +46,7 @@ impl Producer for MockProducer {
 #[derive(Debug, PartialEq)]
 struct MockFault;
 
-impl Display for MockFault {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MockFault")
-    }
-}
-
-impl Error for MockFault {}
-
-/// If `produce` succeeds, `produce_or_recall` also succeeds.
-#[test]
-fn produce_or_recall_succeeds() {
-    let producer = MockProducer::new();
-
-    assert_eq!(producer.produce_or_recall(1), Ok(()));
-}
-
-/// If `produce` fails, `produce_or_recall` also fails.
-#[test]
-fn produce_or_recall_fails() {
-    const GOOD: u8 = 2;
-    let producer = MockProducer::new().mock_full();
-
-    assert_eq!(
-        producer.produce_or_recall(GOOD),
-        Err(Recall::new(GOOD, ProduceFailure::FullStock))
-    );
-}
+producer_fault!(MockFault);
 
 /// If `produce` succeeds, `force` also succeeds.
 #[test]

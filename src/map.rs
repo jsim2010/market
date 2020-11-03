@@ -71,9 +71,9 @@ impl<P, G, F> Converter<P, G, F> {
 
 impl<P, G, F> Producer for Converter<P, G, F>
 where
-    P: crate::Producer,
+    P: Producer,
     G: TryInto<P::Good>,
-    F: From<P::Failure> + crate::Failure,
+    F: From<P::Failure> + Failure,
 {
     type Good = G;
     type Failure = F;

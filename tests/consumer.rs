@@ -2,11 +2,7 @@
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
-    market::{ConsumeFailure, Consumer},
-    std::{
-        error::Error,
-        fmt::{self, Display},
-    },
+    market::{consumer_fault, ConsumeFailure, Consumer},
 };
 
 struct MockConsumer {
@@ -37,9 +33,9 @@ impl MockConsumer {
 
 impl Consumer for MockConsumer {
     type Good = u8;
-    type Fault = MockFault;
+    type Failure = ConsumeFailure<MockFault>;
 
-    #[throws(ConsumeFailure<Self::Fault>)]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if self.shall_fail {
             throw!(ConsumeFailure::Fault(MockFault));
@@ -55,13 +51,7 @@ impl Consumer for MockConsumer {
 #[derive(Debug, PartialEq)]
 struct MockFault;
 
-impl Display for MockFault {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MockFault")
-    }
-}
-
-impl Error for MockFault {}
+consumer_fault!(MockFault);
 
 /// If `consume` returns a good, `demand` returns it.
 #[test]

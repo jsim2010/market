@@ -1,15 +1,10 @@
 //! Implements [`Producer`] and [`Consumer`] for a thread.
 use {
-    crate::{Consumer, ConsumerFailure, Producer},
+    crate::{ConsumeFailure, Consumer, Producer},
     core::fmt::{Debug, Display},
     fehler::{throw, throws},
     log::error,
-    std::{
-        any::Any,
-        error::Error,
-        panic::UnwindSafe,
-        thread::JoinHandle,
-    },
+    std::{any::Any, error::Error, panic::UnwindSafe, thread::JoinHandle},
 };
 
 /// The type returned by [`std::panic::catch_unwind()`] when a panic is caught.
@@ -17,8 +12,7 @@ type Panic = Box<dyn Any + Send + 'static>;
 
 /// An error while consuming the outcome of a thread.
 #[derive(Debug, Eq, PartialEq)]
-pub enum Fault<E>
-{
+pub enum Fault<E> {
     /// The thread was killed.
     Killed,
     /// The thread threw an error.
@@ -37,8 +31,7 @@ impl<E: Display> Display for Fault<E> {
     }
 }
 
-impl<E: Debug + Display> Error for Fault<E> {
-}
+impl<E: Debug + Display> Error for Fault<E> {}
 
 /// The type returned by a thread call which can represent a success of type `S`, an error of type `E`, or a panic.
 #[derive(Debug, parse_display::Display)]
@@ -69,8 +62,7 @@ impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
 ///
 /// Consumes the outcome of running the given closure. Thus, consumption replaces the functionality of `join`.
 #[derive(Debug)]
-pub struct Thread<S, E>
-{
+pub struct Thread<S, E> {
     /// Consumes the outcome of the thread.
     consumer: crate::channel::CrossbeamConsumer<Outcome<S, E>>,
     /// The handle to the thread.
@@ -82,7 +74,6 @@ where
     S: Send + 'static,
     E: Send + 'static,
 {
-    // TODO: Have Thread take an Operations item which represents different types of common thread structures.
     /// Creates a new `Thread` and spawns `call`.
     #[inline]
     pub fn new<F>(call: F) -> Self
@@ -109,10 +100,9 @@ where
     }
 }
 
-impl<S, E> Consumer for Thread<S, E>
-{
+impl<S, E> Consumer for Thread<S, E> {
     type Good = S;
-    type Failure = ConsumerFailure<Fault<E>>;
+    type Failure = ConsumeFailure<Fault<E>>;
 
     #[throws(Self::Failure)]
     #[inline]
@@ -126,8 +116,8 @@ impl<S, E> Consumer for Thread<S, E>
                 Outcome::Panic(panic) => panic!(panic),
             },
             Err(failure) => match failure {
-                ConsumerFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
-                ConsumerFailure::Fault(_) => throw!(Fault::Killed),
+                ConsumeFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
+                ConsumeFailure::Fault(_) => throw!(Fault::Killed),
             },
         }
     }

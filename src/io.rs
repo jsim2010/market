@@ -1,9 +1,9 @@
 //! Implements [`Producer`] and [`Consumer`] for [`std::io::Write`] and [`std::io::Read`] trait objects.
 use {
-    crate::{Consumer, ProducerFailure, ConsumerFailure, Producer},
+    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
     core::{
-        convert::TryFrom,
         cell::RefCell,
+        convert::TryFrom,
         fmt::{Debug, Display},
         marker::PhantomData,
     },
@@ -17,25 +17,32 @@ use {
     },
 };
 
+/// An error thrown by the read thread.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadThreadError {
+    /// Reader threw an error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// [`Consumer`] to which the read thread is sending bytes was dropped.
     #[error(transparent)]
     Closed(#[from] crate::channel::DisconnectedFault),
 }
 
+/// A fault thrown by [`ByteConsumer`].
 #[derive(Debug, thiserror::Error)]
 pub enum ReadBytesFault {
+    /// Read thread threw an error.
     #[error(transparent)]
     Thread(#[from] crate::thread::Fault<ReadThreadError>),
+    /// [`Producer`] in read thread was dropped.
     #[error(transparent)]
     Channel(#[from] crate::channel::DisconnectedFault),
 }
 
-impl From<crate::thread::Fault<ReadThreadError>> for ConsumerFailure<ReadBytesFault> {
+impl From<crate::thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFault> {
+    #[inline]
     fn from(fault: crate::thread::Fault<ReadThreadError>) -> Self {
-        ConsumerFailure::Fault(fault.into())
+        Self::Fault(fault.into())
     }
 }
 
@@ -81,6 +88,7 @@ impl ByteConsumer {
         }
     }
 
+    /// Terminates the read thread.
     #[allow(unused_must_use)] // Trigger::produce() cannot fail.
     #[throws(crate::thread::Fault<ReadThreadError>)]
     fn terminate(&self) {
@@ -92,21 +100,21 @@ impl ByteConsumer {
 
 impl Consumer for ByteConsumer {
     type Good = u8;
-    type Failure = ConsumerFailure<ReadBytesFault>;
+    type Failure = ConsumeFailure<ReadBytesFault>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         let consumption = self.consumer.consume();
 
-        if let Err(ConsumerFailure::Fault(_)) = &consumption {
+        if let Err(ConsumeFailure::Fault(_)) = consumption {
             // If there is a fault in the consumption, it should be because the thread threw an error. A thread error provides more detailed information about the fault so throw that if possible.
-            if let Err(ConsumerFailure::Fault(thread_fault)) = self.thread.consume() {
+            if let Err(ConsumeFailure::Fault(thread_fault)) = self.thread.consume() {
                 throw!(thread_fault);
             }
         }
 
-        consumption.map_err(ConsumerFailure::map_into)?
+        consumption.map_err(ConsumeFailure::map_into)?
     }
 }
 
@@ -116,6 +124,7 @@ pub enum ReadFault<G>
 where
     G: conventus::AssembleFrom<u8>,
 {
+    /// [`ByteConsumer`] threw a fault.
     Read(ReadBytesFault),
     /// Unable to assemble the good from bytes.
     Assemble(<G as conventus::AssembleFrom<u8>>::Error),
@@ -136,17 +145,15 @@ where
     }
 }
 
-impl<G: Debug + Display> Error for ReadFault<G>
-where
-    G: conventus::AssembleFrom<u8>,
-{}
+impl<G: Debug + Display> Error for ReadFault<G> where G: conventus::AssembleFrom<u8> {}
 
-impl<G> From<ReadBytesFault> for ConsumerFailure<ReadFault<G>>
+impl<G> From<ReadBytesFault> for ConsumeFailure<ReadFault<G>>
 where
     G: conventus::AssembleFrom<u8>,
 {
+    #[inline]
     fn from(fault: ReadBytesFault) -> Self {
-        ConsumerFailure::Fault(ReadFault::Read(fault))
+        Self::Fault(ReadFault::Read(fault))
     }
 }
 
@@ -175,6 +182,8 @@ impl<G> Reader<G> {
         }
     }
 
+    /// Terminates the read thread.
+    #[inline]
     #[throws(crate::thread::Fault<ReadThreadError>)]
     pub fn terminate(&self) {
         self.byte_consumer.terminate()?
@@ -184,30 +193,31 @@ impl<G> Reader<G> {
 impl<G> Consumer for Reader<G>
 where
     G: conventus::AssembleFrom<u8>,
-    ReadFault<G>: TryFrom<ConsumerFailure<ReadFault<G>>>,
+    ReadFault<G>: TryFrom<ConsumeFailure<ReadFault<G>>>,
 {
     type Good = G;
-    type Failure = crate::ConsumerFailure<ReadFault<G>>;
+    type Failure = ConsumeFailure<ReadFault<G>>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        let mut bytes = self
-            .byte_consumer
-            .consume_all()?;
+        let mut bytes = self.byte_consumer.consume_all()?;
         let mut buffer = self.buffer.borrow_mut();
         buffer.append(&mut bytes);
         G::assemble_from(&mut buffer).map_err(|error| match error {
-            conventus::AssembleFailure::Incomplete => crate::ConsumerFailure::EmptyStock,
-            conventus::AssembleFailure::Error(e) => crate::ConsumerFailure::Fault(ReadFault::Assemble(e)),
+            conventus::AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
+            conventus::AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadFault::Assemble(e)),
         })?
     }
 }
 
+/// An error thrown in the write thread.
 #[derive(Debug, thiserror::Error)]
 pub enum WriteThreadError {
+    /// The write was unsuccessful.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// The [`Producer`] sending bytes to the write thread was dropped.
     #[error(transparent)]
     Closed(#[from] crate::channel::DisconnectedFault),
 }
@@ -219,6 +229,7 @@ pub enum WriteThreadError {
 struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
     producer: crate::channel::CrossbeamProducer<u8>,
+    /// Triggers the termination of the thread.
     terminator: Arc<crate::sync::Trigger>,
     /// The thread.
     thread: crate::thread::Thread<(), WriteThreadError>,
@@ -252,6 +263,7 @@ impl ByteProducer {
         }
     }
 
+    /// Terminates the write thread.
     #[allow(unused_must_use)] // Trigger::produce() cannot fail.
     #[throws(crate::thread::Fault<WriteThreadError>)]
     fn terminate(&self) {
@@ -263,7 +275,7 @@ impl ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Failure = ProducerFailure<crate::channel::DisconnectedFault>;
+    type Failure = ProduceFailure<crate::channel::DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -294,6 +306,8 @@ impl<G> Writer<G> {
         }
     }
 
+    /// Terminates the writing thread.
+    #[inline]
     #[throws(crate::thread::Fault<WriteThreadError>)]
     pub fn terminate(&self) {
         self.byte_producer.terminate()?
@@ -303,17 +317,17 @@ impl<G> Writer<G> {
 impl<G> Producer for Writer<G>
 where
     G: conventus::DisassembleInto<u8>,
-    WriteError<G>: TryFrom<ProducerFailure<WriteError<G>>>,
+    WriteError<G>: TryFrom<ProduceFailure<WriteError<G>>>,
 {
     type Good = G;
-    type Failure = crate::error::ProducerFailure<WriteError<G>>;
+    type Failure = ProduceFailure<WriteError<G>>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         self.byte_producer
             .produce_all(good.disassemble_into().map_err(WriteError::Disassemble)?)
-            .map_err(crate::error::ProducerFailure::map_into)?
+            .map_err(ProduceFailure::map_into)?
     }
 }
 
@@ -329,6 +343,8 @@ where
     Closed,
 }
 
+producer_fault!(WriteError<G> where G: conventus::DisassembleInto<u8>);
+
 impl<G: Display> Display for WriteError<G>
 where
     G: conventus::DisassembleInto<u8>,
@@ -342,27 +358,7 @@ where
     }
 }
 
-impl<G: Debug + Display> Error for WriteError<G>
-where
-    G: conventus::DisassembleInto<u8>,
-{}
-
-impl<G> core::convert::TryFrom<crate::error::ProducerFailure<WriteError<G>>> for WriteError<G>
-where
-    G: conventus::DisassembleInto<u8>,
-{
-    type Error = ();
-
-    #[inline]
-    #[throws(Self::Error)]
-    fn try_from(failure: crate::error::ProducerFailure<Self>) -> Self {
-        if let crate::error::ProducerFailure::Fault(fault) = failure {
-            fault
-        } else {
-            throw!(())
-        }
-    }
-}
+impl<G: Debug + Display> Error for WriteError<G> where G: conventus::DisassembleInto<u8> {}
 
 impl<G> From<crate::channel::DisconnectedFault> for WriteError<G>
 where

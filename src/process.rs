@@ -1,6 +1,7 @@
 //! Implements [`Producer`] and [`Consumer`] for the standard I/O streams of a process.
 use {
-    core::{convert::TryFrom, cell::RefCell, fmt::Debug},
+    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    core::{cell::RefCell, convert::TryFrom, fmt::Debug},
     fehler::{throw, throws},
     std::{
         process::{Child, Command, ExitStatus, Stdio},
@@ -37,24 +38,15 @@ impl<I, O, E> Process<I, O, E> {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| CreateProcessError::new(&command_string, error))?;
-        let input = Rc::new(crate::io::Writer::new(child.stdin.take().ok_or_else(|| {
-            CreateProcessError::new(
-                &command_string,
-                UncapturedStdioError("stdin".to_string()),
-            )
-        })?));
-        let output = Rc::new(crate::io::Reader::new(child.stdout.take().ok_or_else(|| {
-            CreateProcessError::new(
-                &command_string,
-                UncapturedStdioError("stdout".to_string()),
-            )
-        })?));
-        let error = Rc::new(crate::io::Reader::new(child.stderr.take().ok_or_else(|| {
-            CreateProcessError::new(
-                &command_string,
-                UncapturedStdioError("stderr".to_string()),
-            )
-        })?));
+        let input = Rc::new(crate::io::Writer::new(child.stdin.take().ok_or_else(
+            || CreateProcessError::new(&command_string, UncapturedStdioError("stdin".to_string())),
+        )?));
+        let output = Rc::new(crate::io::Reader::new(child.stdout.take().ok_or_else(
+            || CreateProcessError::new(&command_string, UncapturedStdioError("stdout".to_string())),
+        )?));
+        let error = Rc::new(crate::io::Reader::new(child.stderr.take().ok_or_else(
+            || CreateProcessError::new(&command_string, UncapturedStdioError("stderr".to_string())),
+        )?));
 
         Self {
             input: Rc::clone(&input),
@@ -83,13 +75,13 @@ impl<I, O, E> Process<I, O, E> {
     }
 }
 
-impl<I, O, E> crate::Consumer for Process<I, O, E>
+impl<I, O, E> Consumer for Process<I, O, E>
 where
     O: conventus::AssembleFrom<u8> + Debug + 'static,
     <O as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Failure = crate::ConsumerFailure<crate::io::ReadFault<O>>;
+    type Failure = ConsumeFailure<crate::io::ReadFault<O>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -98,13 +90,13 @@ where
     }
 }
 
-impl<I, O, E> crate::Producer for Process<I, O, E>
+impl<I, O, E> Producer for Process<I, O, E>
 where
     I: conventus::DisassembleInto<u8> + Debug,
     <I as conventus::DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
-    type Failure = crate::error::ProducerFailure<crate::io::WriteError<I>>;
+    type Failure = ProduceFailure<crate::io::WriteError<I>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -122,36 +114,54 @@ pub struct Waiter<I, O, E> {
     // Use RefCell due to try_wait() requiring Child to be mut.
     /// The process.
     child: RefCell<Child>,
+    /// The input writer.
     input: Rc<crate::io::Writer<I>>,
+    /// The output reader.
     output: Rc<crate::io::Reader<O>>,
+    /// The error output reader.
     error: Rc<crate::io::Reader<E>>,
 }
 
-impl<I, O, E> crate::Consumer for Waiter<I, O, E> {
+impl<I, O, E> Consumer for Waiter<I, O, E> {
     type Good = ExitStatus;
-    type Failure = crate::ConsumerFailure<WaitFault>;
+    type Failure = ConsumeFailure<WaitFault>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        if let Some(status) =
-            self.child
-                .borrow_mut()
-                .try_wait()
-                .map_err(|error| WaitFault {
-                    command: self.command.clone(),
-                    error,
-                })?
+        if let Some(status) = self
+            .child
+            .borrow_mut()
+            .try_wait()
+            .map_err(|error| WaitFault {
+                command: self.command.clone(),
+                error: error.into(),
+            })?
         {
             // Calling wait() is recommended to ensure resources are released. Since try_wait() was successful, wait() should not block.
-            self.child.borrow_mut().wait().expect("waiting on child process");
+            #[allow(unused_results)] // Status was already retrieved by try_wait().
+            {
+                self.child.borrow_mut().wait().map_err(|error| WaitFault {
+                    command: self.command.clone(),
+                    error: error.into(),
+                })?;
+            }
             // Terminate the Writer and Reader threads.
-            self.input.terminate().expect("terminating child process input");
-            self.output.terminate().expect("terminating child process output");
-            self.error.terminate().expect("terminating child process error output");
+            self.input.terminate().map_err(|error| WaitFault {
+                command: self.command.clone(),
+                error: error.into(),
+            })?;
+            self.output.terminate().map_err(|error| WaitFault {
+                command: self.command.clone(),
+                error: error.into(),
+            })?;
+            self.error.terminate().map_err(|error| WaitFault {
+                command: self.command.clone(),
+                error: error.into(),
+            })?;
             status
         } else {
-            throw!(crate::ConsumerFailure::EmptyStock);
+            throw!(ConsumeFailure::EmptyStock);
         }
     }
 }
@@ -195,6 +205,20 @@ pub enum CreateProcessErrorType {
 #[error("`{0}` is not captured")]
 pub struct UncapturedStdioError(String);
 
+/// Error thrown while waiting on process.
+#[derive(Debug, thiserror::Error)]
+pub enum WaitError {
+    /// Error thrown by wait call.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    /// Error thrown while terminating a write thread.
+    #[error(transparent)]
+    Write(#[from] crate::thread::Fault<crate::io::WriteThreadError>),
+    /// Error thrown while terminating a read thread.
+    #[error(transparent)]
+    Read(#[from] crate::thread::Fault<crate::io::ReadThreadError>),
+}
+
 /// An error waiting for a `Process` to exit.
 #[derive(Debug, thiserror::Error)]
 #[error("Failed to wait for `{command}`: {error}")]
@@ -202,16 +226,16 @@ pub struct WaitFault {
     /// The command of the process.
     command: String,
     /// The error.
-    error: std::io::Error,
+    error: WaitError,
 }
 
-impl TryFrom<crate::ConsumerFailure<WaitFault>> for WaitFault {
+impl TryFrom<ConsumeFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: crate::ConsumerFailure<Self>) -> Self {
-        if let crate::ConsumerFailure::Fault(fault) = failure {
+    fn try_from(failure: ConsumeFailure<Self>) -> Self {
+        if let ConsumeFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())
@@ -219,13 +243,13 @@ impl TryFrom<crate::ConsumerFailure<WaitFault>> for WaitFault {
     }
 }
 
-impl TryFrom<crate::error::ProducerFailure<WaitFault>> for WaitFault {
+impl TryFrom<ProduceFailure<WaitFault>> for WaitFault {
     type Error = ();
 
     #[inline]
     #[throws(Self::Error)]
-    fn try_from(failure: crate::error::ProducerFailure<Self>) -> Self {
-        if let crate::error::ProducerFailure::Fault(fault) = failure {
+    fn try_from(failure: ProduceFailure<Self>) -> Self {
+        if let ProduceFailure::Fault(fault) = failure {
             fault
         } else {
             throw!(())

@@ -1,7 +1,10 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
     crate::{Consumer, FaultlessFailure, Producer},
-    core::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}},
+    core::{
+        convert::Infallible,
+        sync::atomic::{AtomicBool, Ordering},
+    },
     fehler::{throw, throws},
 };
 

@@ -2,21 +2,27 @@
 #![macro_use]
 use {
     crate::Failure,
-    core::{convert::{Infallible, TryFrom}, fmt::{Display, Debug}},
+    core::{
+        convert::{Infallible, TryFrom},
+        fmt::{Debug, Display},
+    },
     fehler::{throw, throws},
     std::error::Error,
 };
 
-// TODO: Perhaps make these derive macros?
-// Since unable to implement TryFrom<ConsumerFailure<T>> for T due to T not being covered, this macro implements that functionality.
+// Since unable to implement TryFrom<ConsumeFailure<T>> for T due to T not being covered, this macro implements that functionality.
+/// Makes type able to be T in ConsumeFailure<T>.
+#[macro_export]
 macro_rules! consumer_fault {
     ($ty:tt$(<$generic:tt>)?$( where $t:ty: $bounds:path)?) => {
-        impl$(<$generic>)? core::convert::TryFrom<$crate::ConsumerFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
+        #[allow(unused_qualifications)] // Where this macro will be put is unknown.
+        impl$(<$generic>)? core::convert::TryFrom<$crate::ConsumeFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
             type Error = ();
 
+            #[inline]
             #[fehler::throws(())]
-            fn try_from(failure: $crate::ConsumerFailure<Self>) -> Self {
-                if let $crate::ConsumerFailure::Fault(fault) = failure {
+            fn try_from(failure: $crate::ConsumeFailure<Self>) -> Self {
+                if let $crate::ConsumeFailure::Fault(fault) = failure {
                     fault
                 } else {
                     fehler::throw!(())
@@ -26,15 +32,19 @@ macro_rules! consumer_fault {
     };
 }
 
-// Since unable to implement TryFrom<ProducerFailure<T>> for T due to T not being covered, this macro implements that functionality.
+// Since unable to implement TryFrom<ProduceFailure<T>> for T due to T not being covered, this macro implements that functionality.
+/// Makes type able to be T in ProduceFailure<T>.
+#[macro_export]
 macro_rules! producer_fault {
-    ($ty:tt$(<$generic:tt>)?) => {
-        impl$(<$generic>)? core::convert::TryFrom<$crate::ProducerFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? {
+    ($ty:tt$(<$generic:tt>)?$( where $t:ty: $bounds:path)?) => {
+        #[allow(unused_qualifications)] // Where this macro will be put is unknown.
+        impl$(<$generic>)? core::convert::TryFrom<$crate::ProduceFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
             type Error = ();
 
+            #[inline]
             #[fehler::throws(())]
-            fn try_from(failure: $crate::ProducerFailure<Self>) -> Self {
-                if let $crate::ProducerFailure::Fault(fault) = failure {
+            fn try_from(failure: $crate::ProduceFailure<Self>) -> Self {
+                if let $crate::ProduceFailure::Fault(fault) = failure {
                     fault
                 } else {
                     fehler::throw!(())
@@ -49,32 +59,30 @@ macro_rules! producer_fault {
 /// This should be used in all cases where the only reason the [`Consumer`] can fail without a fault is due to the stock being empty.
 // thiserror::Error is not derived so that T is not required to impl Display. see www.github.com/dtolnay/thiserror/pull/107
 #[derive(Debug, Hash)]
-pub enum ConsumerFailure<T>
-{
+pub enum ConsumeFailure<T> {
     /// The stock of the market is empty.
     EmptyStock,
     /// Fault `T` was caught during consumption.
     Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ConsumerFailure<U>.
-impl<T> ConsumerFailure<T>
-{
-    // From<ConsumerFailure<T>> for ConsumerFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
-    /// Converts `ConsumerFailure<T>` into `ConsumerFailure<U>`.
+#[allow(clippy::use_self)] // False positive for ConsumeFailure<U>.
+impl<T> ConsumeFailure<T> {
+    // From<ConsumeFailure<T>> for ConsumeFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
+    /// Converts `ConsumeFailure<T>` into `ConsumeFailure<U>`.
     #[inline]
-    pub fn map_into<U>(self) -> ConsumerFailure<U>
+    pub fn map_into<U>(self) -> ConsumeFailure<U>
     where
         U: From<T>,
     {
         match self {
-            Self::EmptyStock => ConsumerFailure::EmptyStock,
-            Self::Fault(fault) => ConsumerFailure::Fault(fault.into()),
+            Self::EmptyStock => ConsumeFailure::EmptyStock,
+            Self::Fault(fault) => ConsumeFailure::Fault(fault.into()),
         }
     }
 }
 
-impl<T> Failure for ConsumerFailure<T>
+impl<T> Failure for ConsumeFailure<T>
 where
     T: TryFrom<Self>,
 {
@@ -82,7 +90,7 @@ where
 }
 
 // Display is implemented manually due to issue with thiserror::Error described above.
-impl<T> Display for ConsumerFailure<T>
+impl<T> Display for ConsumeFailure<T>
 where
     T: Display,
 {
@@ -96,14 +104,10 @@ where
 }
 
 // Error is implemented manually due to issue with thiserror::Error described above.
-impl<T> Error for ConsumerFailure<T>
-where
-    T: Debug + Display,
-{}
+impl<T> Error for ConsumeFailure<T> where T: Debug + Display {}
 
-// From<conventus::AssembleFailure<E>> for ConsumerFailure<T> where T: From<E> would be preferrable but this conflicts with From<T> for ConsumerFailure<T> due to the inability to indicate T != conventus::AssembleFailure<E>.
-impl<T> From<conventus::AssembleFailure<T>> for ConsumerFailure<T>
-{
+// From<conventus::AssembleFailure<E>> for ConsumeFailure<T> where T: From<E> would be preferrable but this conflicts with From<T> for ConsumeFailure<T> due to the inability to indicate T != conventus::AssembleFailure<E>.
+impl<T> From<conventus::AssembleFailure<T>> for ConsumeFailure<T> {
     #[inline]
     fn from(failure: conventus::AssembleFailure<T>) -> Self {
         match failure {
@@ -114,8 +118,7 @@ impl<T> From<conventus::AssembleFailure<T>> for ConsumerFailure<T>
 }
 
 // From<T> is implemented manually due to issue with thiserror::Error described above.
-impl<T> From<T> for ConsumerFailure<T>
-{
+impl<T> From<T> for ConsumeFailure<T> {
     #[inline]
     fn from(fault: T) -> Self {
         Self::Fault(fault)
@@ -146,32 +149,30 @@ impl Failure for FaultlessFailure {
 /// This should be used in all cases where the only reason the [`Producer`] can fail without a fault is due to the stock being full.
 // thiserror::Error is not derived so that T is not required to impl Display. see www.github.com/dtolnay/thiserror/pull/107
 #[derive(Debug, Hash)]
-pub enum ProducerFailure<T>
-{
+pub enum ProduceFailure<T> {
     /// The stock of the market is full.
     FullStock,
     /// Fault `T` was thrown during production.
     Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ProducerFailure<T>.
-impl<T> ProducerFailure<T>
-{
-    // From<ProducerFailure<T>> for ProducerFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
-    /// Converts `ProducerFailure<T>` into `ProducerFailure<U>`.
+#[allow(clippy::use_self)] // False positive for ProduceFailure<T>.
+impl<T> ProduceFailure<T> {
+    // From<ProduceFailure<T>> for ProduceFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
+    /// Converts `ProduceFailure<T>` into `ProduceFailure<U>`.
     #[inline]
-    pub fn map_into<U>(self) -> ProducerFailure<U>
+    pub fn map_into<U>(self) -> ProduceFailure<U>
     where
         U: From<T>,
     {
         match self {
-            Self::FullStock => ProducerFailure::FullStock,
-            Self::Fault(fault) => ProducerFailure::Fault(fault.into()),
+            Self::FullStock => ProduceFailure::FullStock,
+            Self::Fault(fault) => ProduceFailure::Fault(fault.into()),
         }
     }
 }
 
-impl<T> Failure for ProducerFailure<T>
+impl<T> Failure for ProduceFailure<T>
 where
     T: TryFrom<Self>,
 {
@@ -179,7 +180,7 @@ where
 }
 
 // Display is implemented manually due to issue with thiserror::Error described above.
-impl<T> Display for ProducerFailure<T>
+impl<T> Display for ProduceFailure<T>
 where
     T: Display,
 {
@@ -193,14 +194,10 @@ where
 }
 
 // Error is implemented manually due to issue with thiserror::Error described above.
-impl<T> Error for ProducerFailure<T>
-where
-    T: Debug + Display,
-{}
+impl<T> Error for ProduceFailure<T> where T: Debug + Display {}
 
 // From<T> is implemented manually due to issue with thiserror::Error described above.
-impl<T> From<T> for ProducerFailure<T>
-{
+impl<T> From<T> for ProduceFailure<T> {
     #[inline]
     fn from(fault: T) -> Self {
         Self::Fault(fault)

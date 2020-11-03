@@ -1,20 +1,20 @@
 //! Implements [`Producer`] and [`Consumer`] for various types of channels.
 use {
-    crate::{Consumer, Producer, ConsumerFailure, ProducerFailure},
+    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
     core::fmt::Debug,
     fehler::throws,
-    std::sync::mpsc::{Receiver, Sender, TryRecvError, SendError},
+    std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError},
 };
 
 /// A fault caused by the other side of the channel being dropped.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 #[error("channel is disconnected")]
 pub struct DisconnectedFault;
 
 consumer_fault!(DisconnectedFault);
 producer_fault!(DisconnectedFault);
 
-impl From<TryRecvError> for ConsumerFailure<DisconnectedFault> {
+impl From<TryRecvError> for ConsumeFailure<DisconnectedFault> {
     #[inline]
     fn from(error: TryRecvError) -> Self {
         match error {
@@ -24,14 +24,14 @@ impl From<TryRecvError> for ConsumerFailure<DisconnectedFault> {
     }
 }
 
-impl<G> From<SendError<G>> for ProducerFailure<DisconnectedFault> {
+impl<G> From<SendError<G>> for ProduceFailure<DisconnectedFault> {
     #[inline]
     fn from(_: SendError<G>) -> Self {
         Self::Fault(DisconnectedFault)
     }
 }
 
-impl From<crossbeam_channel::TryRecvError> for ConsumerFailure<DisconnectedFault> {
+impl From<crossbeam_channel::TryRecvError> for ConsumeFailure<DisconnectedFault> {
     #[inline]
     fn from(error: crossbeam_channel::TryRecvError) -> Self {
         match error {
@@ -41,7 +41,7 @@ impl From<crossbeam_channel::TryRecvError> for ConsumerFailure<DisconnectedFault
     }
 }
 
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProducerFailure<DisconnectedFault> {
+impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceFailure<DisconnectedFault> {
     #[inline]
     fn from(error: crossbeam_channel::TrySendError<G>) -> Self {
         match error {
@@ -58,10 +58,9 @@ pub struct StdConsumer<G> {
     rx: Receiver<G>,
 }
 
-impl<G> Consumer for StdConsumer<G>
-{
+impl<G> Consumer for StdConsumer<G> {
     type Good = G;
-    type Failure = ConsumerFailure<DisconnectedFault>;
+    type Failure = ConsumeFailure<DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -84,10 +83,9 @@ pub struct StdProducer<G> {
     tx: Sender<G>,
 }
 
-impl<G> Producer for StdProducer<G>
-{
+impl<G> Producer for StdProducer<G> {
     type Good = G;
-    type Failure = ProducerFailure<DisconnectedFault>;
+    type Failure = ProduceFailure<DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -105,16 +103,14 @@ impl<G> From<Sender<G>> for StdProducer<G> {
 
 /// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
 #[derive(Debug)]
-pub struct CrossbeamConsumer<G>
-{
+pub struct CrossbeamConsumer<G> {
     /// The receiver.
     rx: crossbeam_channel::Receiver<G>,
 }
 
-impl<G> Consumer for CrossbeamConsumer<G>
-{
+impl<G> Consumer for CrossbeamConsumer<G> {
     type Good = G;
-    type Failure = ConsumerFailure<DisconnectedFault>;
+    type Failure = ConsumeFailure<DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -123,8 +119,7 @@ impl<G> Consumer for CrossbeamConsumer<G>
     }
 }
 
-impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G>
-{
+impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G> {
     #[inline]
     fn from(rx: crossbeam_channel::Receiver<G>) -> Self {
         Self { rx }
@@ -138,10 +133,9 @@ pub struct CrossbeamProducer<G> {
     tx: crossbeam_channel::Sender<G>,
 }
 
-impl<G> Producer for CrossbeamProducer<G>
-{
+impl<G> Producer for CrossbeamProducer<G> {
     type Good = G;
-    type Failure = ProducerFailure<DisconnectedFault>;
+    type Failure = ProduceFailure<DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]

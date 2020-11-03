@@ -10,6 +10,7 @@
 
 // error must be first to ensure consumer_fault! is defined before being used.
 mod error;
+
 pub mod channel;
 pub mod io;
 mod map;
@@ -18,10 +19,13 @@ pub mod sync;
 pub mod thread;
 pub mod vec;
 
-pub use error::{ConsumerFailure, FaultlessFailure, ProducerFailure};
+pub use error::{ConsumeFailure, FaultlessFailure, ProduceFailure};
 
 use {
-    core::{convert::{Infallible, TryFrom}, fmt::Debug},
+    core::{
+        convert::{Infallible, TryFrom},
+        fmt::Debug,
+    },
     fehler::{throw, throws},
 };
 
@@ -32,7 +36,7 @@ pub trait Failure: Sized {
 }
 
 impl Failure for Infallible {
-    type Fault = Infallible;
+    type Fault = Self;
 }
 
 /// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.
@@ -41,7 +45,7 @@ pub type Fault<F> = <F as Failure>::Fault;
 /// Stores goods in a market.
 ///
 /// Actions that can be performed have the following name convention:
-/// 
+///
 /// 1. An action shall have the following components: desire and quantity.
 /// 2. If an action has multiple non-empty components, they shall be split by an underscore `_`.
 ///
