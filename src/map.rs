@@ -1,11 +1,12 @@
 //! Implements actors that map goods and errors.
 use {
+    crate::{Consumer, Failure, Producer},
     core::{convert::TryInto, marker::PhantomData},
     fehler::throws,
     std::rc::Rc,
 };
 
-/// A [`Consumer`] that maps the consumed good to a new good.
+/// A [`Consumer`] that maps the consumption result from `C` to a `Result<G, F>`.
 #[derive(Debug)]
 pub(crate) struct Adapter<C, G, F> {
     /// The original consumer.
@@ -27,11 +28,11 @@ impl<C, G, F> Adapter<C, G, F> {
     }
 }
 
-impl<C, G, F> crate::Consumer for Adapter<C, G, F>
+impl<C, G, F> Consumer for Adapter<C, G, F>
 where
-    C: crate::Consumer,
+    C: Consumer,
     G: From<C::Good>,
-    F: From<C::Failure> + crate::Failure,
+    F: From<C::Failure> + Failure,
 {
     type Good = G;
     type Failure = F;
@@ -46,7 +47,7 @@ where
     }
 }
 
-/// A [`Producer`] that maps the produced good to a new good.
+/// A [`Producer`] that maps goods from `G` to `P::Good` and maps failures from `P::Failure` to `F`.
 #[derive(Debug)]
 pub(crate) struct Converter<P, G, F> {
     /// The original producer.
@@ -68,7 +69,7 @@ impl<P, G, F> Converter<P, G, F> {
     }
 }
 
-impl<P, G, F> crate::Producer for Converter<P, G, F>
+impl<P, G, F> Producer for Converter<P, G, F>
 where
     P: crate::Producer,
     G: TryInto<P::Good>,

@@ -4,6 +4,7 @@ use {
     fehler::{throw, throws},
     std::{
         process::{Child, Command, ExitStatus, Stdio},
+        rc::Rc,
     },
 };
 
@@ -15,13 +16,13 @@ use {
 #[derive(Debug)]
 pub struct Process<I, O, E> {
     /// The stdin of the process.
-    input: crate::io::Writer<I>,
+    input: Rc<crate::io::Writer<I>>,
     /// The stdout of the process.
-    output: crate::io::Reader<O>,
+    output: Rc<crate::io::Reader<O>>,
     /// The stderr of the process.
-    error: crate::io::Reader<E>,
+    error: Rc<crate::io::Reader<E>>,
     /// The `Waiter` of the process.
-    waiter: Waiter,
+    waiter: Waiter<I, O, E>,
 }
 
 impl<I, O, E> Process<I, O, E> {
@@ -36,33 +37,48 @@ impl<I, O, E> Process<I, O, E> {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| CreateProcessError::new(&command_string, error))?;
+        let input = Rc::new(crate::io::Writer::new(child.stdin.take().ok_or_else(|| {
+            CreateProcessError::new(
+                &command_string,
+                UncapturedStdioError("stdin".to_string()),
+            )
+        })?));
+        let output = Rc::new(crate::io::Reader::new(child.stdout.take().ok_or_else(|| {
+            CreateProcessError::new(
+                &command_string,
+                UncapturedStdioError("stdout".to_string()),
+            )
+        })?));
+        let error = Rc::new(crate::io::Reader::new(child.stderr.take().ok_or_else(|| {
+            CreateProcessError::new(
+                &command_string,
+                UncapturedStdioError("stderr".to_string()),
+            )
+        })?));
 
         Self {
-            input: crate::io::Writer::new(child.stdin.take().ok_or_else(|| {
-                CreateProcessError::new(&command_string, UncapturedStdioError("stdin".to_string()))
-            })?),
-            output: crate::io::Reader::new(child.stdout.take().ok_or_else(|| {
-                CreateProcessError::new(&command_string, UncapturedStdioError("stdout".to_string()))
-            })?),
-            error: crate::io::Reader::new(child.stderr.take().ok_or_else(|| {
-                CreateProcessError::new(&command_string, UncapturedStdioError("stderr".to_string()))
-            })?),
+            input: Rc::clone(&input),
+            output: Rc::clone(&output),
+            error: Rc::clone(&error),
             waiter: Waiter {
                 child: RefCell::new(child),
                 command: command_string,
+                input,
+                output,
+                error,
             },
         }
     }
 
     /// Returns the `Consumer` of the stderr pipe.
     #[inline]
-    pub const fn stderr(&self) -> &crate::io::Reader<E> {
+    pub const fn stderr(&self) -> &Rc<crate::io::Reader<E>> {
         &self.error
     }
 
     /// Returns the `Consumer` of the `ExitStatus` of the process.
     #[inline]
-    pub const fn waiter(&self) -> &Waiter {
+    pub const fn waiter(&self) -> &Waiter<I, O, E> {
         &self.waiter
     }
 }
@@ -99,16 +115,19 @@ where
 
 /// Consumes the `ExitStatus` of a process.
 #[derive(Debug)]
-pub struct Waiter {
+pub struct Waiter<I, O, E> {
     // Used for providing information to errors.
     /// A printable representation of the command executed by the process.
     command: String,
     // Use RefCell due to try_wait() requiring Child to be mut.
     /// The process.
     child: RefCell<Child>,
+    input: Rc<crate::io::Writer<I>>,
+    output: Rc<crate::io::Reader<O>>,
+    error: Rc<crate::io::Reader<E>>,
 }
 
-impl crate::Consumer for Waiter {
+impl<I, O, E> crate::Consumer for Waiter<I, O, E> {
     type Good = ExitStatus;
     type Failure = crate::ConsumerFailure<WaitFault>;
 
@@ -124,7 +143,12 @@ impl crate::Consumer for Waiter {
                     error,
                 })?
         {
-            // TODO: Join both Readers and Writer.
+            // Calling wait() is recommended to ensure resources are released. Since try_wait() was successful, wait() should not block.
+            self.child.borrow_mut().wait().expect("waiting on child process");
+            // Terminate the Writer and Reader threads.
+            self.input.terminate().expect("terminating child process input");
+            self.output.terminate().expect("terminating child process output");
+            self.error.terminate().expect("terminating child process error output");
             status
         } else {
             throw!(crate::ConsumerFailure::EmptyStock);

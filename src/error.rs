@@ -1,19 +1,21 @@
 //! Implements errors thrown by `market`.
 #![macro_use]
 use {
+    crate::Failure,
     core::{convert::{Infallible, TryFrom}, fmt::{Display, Debug}},
+    fehler::{throw, throws},
     std::error::Error,
 };
 
 // TODO: Perhaps make these derive macros?
 // Since unable to implement TryFrom<ConsumerFailure<T>> for T due to T not being covered, this macro implements that functionality.
-macro_rules! try_from_consumer_failure {
-    ($t:ty) => {
-        impl core::convert::TryFrom<$crate::ConsumerFailure<$t>> for $t {
+macro_rules! consumer_fault {
+    ($ty:tt$(<$generic:tt>)?$( where $t:ty: $bounds:path)?) => {
+        impl$(<$generic>)? core::convert::TryFrom<$crate::ConsumerFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
             type Error = ();
 
-            #[fehler::throws(Self::Error)]
-            fn try_from(failure: $crate::ConsumerFailure<$t>) -> Self {
+            #[fehler::throws(())]
+            fn try_from(failure: $crate::ConsumerFailure<Self>) -> Self {
                 if let $crate::ConsumerFailure::Fault(fault) = failure {
                     fault
                 } else {
@@ -25,14 +27,14 @@ macro_rules! try_from_consumer_failure {
 }
 
 // Since unable to implement TryFrom<ProducerFailure<T>> for T due to T not being covered, this macro implements that functionality.
-macro_rules! try_from_producer_failure {
-    ($t:ty) => {
-        impl core::convert::TryFrom<$crate::error::ProducerFailure<$t>> for $t {
+macro_rules! producer_fault {
+    ($ty:tt$(<$generic:tt>)?) => {
+        impl$(<$generic>)? core::convert::TryFrom<$crate::ProducerFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? {
             type Error = ();
 
-            #[fehler::throws(Self::Error)]
-            fn try_from(failure: $crate::error::ProducerFailure<$t>) -> Self {
-                if let $crate::error::ProducerFailure::Fault(fault) = failure {
+            #[fehler::throws(())]
+            fn try_from(failure: $crate::ProducerFailure<Self>) -> Self {
+                if let $crate::ProducerFailure::Fault(fault) = failure {
                     fault
                 } else {
                     fehler::throw!(())
@@ -72,7 +74,7 @@ impl<T> ConsumerFailure<T>
     }
 }
 
-impl<T> crate::Failure for ConsumerFailure<T>
+impl<T> Failure for ConsumerFailure<T>
 where
     T: TryFrom<Self>,
 {
@@ -121,19 +123,21 @@ impl<T> From<T> for ConsumerFailure<T>
 }
 
 /// The [`Failure`] thrown when an action fails in a case where a fault is not possible.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("stock is insufficient")]
 pub struct FaultlessFailure;
 
 impl TryFrom<FaultlessFailure> for Infallible {
     type Error = ();
 
     #[inline]
-    fn try_from(_failure: FaultlessFailure) -> Result<Self, Self::Error> {
-        Err(())
+    #[throws(())]
+    fn try_from(_failure: FaultlessFailure) -> Self {
+        throw!(());
     }
 }
 
-impl crate::Failure for FaultlessFailure {
+impl Failure for FaultlessFailure {
     type Fault = Infallible;
 }
 
@@ -167,7 +171,7 @@ impl<T> ProducerFailure<T>
     }
 }
 
-impl<T> crate::Failure for ProducerFailure<T>
+impl<T> Failure for ProducerFailure<T>
 where
     T: TryFrom<Self>,
 {

@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for a thread.
 use {
-    crate::Producer,
+    crate::{Consumer, ConsumerFailure, Producer},
     core::fmt::{Debug, Display},
     fehler::{throw, throws},
     log::error,
@@ -20,19 +20,19 @@ type Panic = Box<dyn Any + Send + 'static>;
 pub enum Fault<E>
 {
     /// The thread was killed.
-    //#[error("thread was killed before output could be consumed")]
     Killed,
     /// The thread threw an error.
-    //#[error(transparent)]
     Error(E),
 }
+
+consumer_fault!(Fault<E>);
 
 impl<E: Display> Display for Fault<E> {
     #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            Self::Killed => write!(f, "thread was killed before output could be consumed"),
-            Self::Error(ref error) => write!(f, "{}", error),
+            Self::Killed => write!(f, "thread was killed"),
+            Self::Error(ref error) => write!(f, "thread output error: {}", error),
         }
     }
 }
@@ -40,17 +40,27 @@ impl<E: Display> Display for Fault<E> {
 impl<E: Debug + Display> Error for Fault<E> {
 }
 
-impl<E> core::convert::TryFrom<crate::ConsumerFailure<Fault<E>>> for Fault<E>
-{
-    type Error = ();
+/// The type returned by a thread call which can represent a success of type `S`, an error of type `E`, or a panic.
+#[derive(Debug, parse_display::Display)]
+enum Outcome<S, E> {
+    /// The thread call completed sucessfully.
+    #[display("{0}")]
+    Success(S),
+    /// The thread call threw an error.
+    #[display("ERROR: {0}")]
+    Error(E),
+    /// The thread call panicked.
+    #[display("PANIC")]
+    Panic(Panic),
+}
 
+impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
     #[inline]
-    #[throws(<Self as core::convert::TryFrom<crate::ConsumerFailure<Self>>>::Error)]
-    fn try_from(failure: crate::ConsumerFailure<Self>) -> Self {
-        if let crate::ConsumerFailure::Fault(fault) = failure {
-            fault
-        } else {
-            throw!(())
+    fn from(result: Result<Result<S, E>, Panic>) -> Self {
+        match result {
+            Ok(Ok(success)) => Self::Success(success),
+            Ok(Err(error)) => Self::Error(error),
+            Err(panic) => Self::Panic(panic),
         }
     }
 }
@@ -72,6 +82,7 @@ where
     S: Send + 'static,
     E: Send + 'static,
 {
+    // TODO: Have Thread take an Operations item which represents different types of common thread structures.
     /// Creates a new `Thread` and spawns `call`.
     #[inline]
     pub fn new<F>(call: F) -> Self
@@ -98,10 +109,10 @@ where
     }
 }
 
-impl<S, E> crate::Consumer for Thread<S, E>
+impl<S, E> Consumer for Thread<S, E>
 {
     type Good = S;
-    type Failure = crate::ConsumerFailure<Fault<E>>;
+    type Failure = ConsumerFailure<Fault<E>>;
 
     #[throws(Self::Failure)]
     #[inline]
@@ -111,38 +122,13 @@ impl<S, E> crate::Consumer for Thread<S, E>
                 Outcome::Success(success) => success,
                 Outcome::Error(error) => throw!(Fault::Error(error)),
                 #[allow(clippy::panic)]
-                // Propogating the panic that occurred in call provided by third-party.
+                // Propogate the panic that occurred in call provided by client.
                 Outcome::Panic(panic) => panic!(panic),
             },
             Err(failure) => match failure {
-                crate::ConsumerFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
-                crate::ConsumerFailure::Fault(_) => throw!(Fault::Killed),
+                ConsumerFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
+                ConsumerFailure::Fault(_) => throw!(Fault::Killed),
             },
-        }
-    }
-}
-
-/// The type returned by a thread call which can represent a success of type `S`, an error of type `E`, or a panic.
-#[derive(Debug, parse_display::Display)]
-enum Outcome<S, E> {
-    /// The thread call completed sucessfully.
-    #[display("{0}")]
-    Success(S),
-    /// The thread call threw an error.
-    #[display("ERROR: {0}")]
-    Error(E),
-    /// The thread call panicked.
-    #[display("PANIC")]
-    Panic(Panic),
-}
-
-impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
-    #[inline]
-    fn from(result: Result<Result<S, E>, Panic>) -> Self {
-        match result {
-            Ok(Ok(success)) => Self::Success(success),
-            Ok(Err(error)) => Self::Error(error),
-            Err(panic) => Self::Panic(panic),
         }
     }
 }

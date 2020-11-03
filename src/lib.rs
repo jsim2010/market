@@ -8,7 +8,7 @@
 //! 1. [`Failure`]: Indicates that an action was not successful.
 //! 2. [`Fault`]: A subset of [`Failure`]s that indicate the market is currently in a state where no attempted action will be successful until the state is changed (if possible).
 
-// error must be first to ensure try_from_consumer_failure! is defined before being used.
+// error must be first to ensure consumer_fault! is defined before being used.
 mod error;
 pub mod channel;
 pub mod io;
@@ -21,7 +21,7 @@ pub mod vec;
 pub use error::{ConsumerFailure, FaultlessFailure, ProducerFailure};
 
 use {
-    core::{convert::TryFrom, fmt::Debug},
+    core::{convert::{Infallible, TryFrom}, fmt::Debug},
     fehler::{throw, throws},
 };
 
@@ -29,6 +29,10 @@ use {
 pub trait Failure: Sized {
     /// Describes the fault that could occur.
     type Fault: TryFrom<Self>;
+}
+
+impl Failure for Infallible {
+    type Fault = Infallible;
 }
 
 /// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.

@@ -1,6 +1,7 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
-    core::sync::atomic::{AtomicBool, Ordering},
+    crate::{Consumer, FaultlessFailure, Producer},
+    core::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}},
     fehler::{throw, throws},
 };
 
@@ -12,7 +13,7 @@ pub struct Trigger {
 }
 
 impl Trigger {
-    /// Creates a new `Trigger`.
+    /// Creates a new `Trigger` that is unactive.
     #[inline]
     #[must_use]
     pub const fn new() -> Self {
@@ -22,27 +23,26 @@ impl Trigger {
     }
 }
 
-impl crate::Consumer for Trigger {
+impl Consumer for Trigger {
     type Good = ();
-    type Failure = crate::error::FaultlessFailure;
+    type Failure = FaultlessFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            throw!(crate::error::FaultlessFailure)
+            throw!(FaultlessFailure)
         }
     }
 }
 
-// TODO: Indicate this cannot fail.
-impl crate::Producer for Trigger {
+impl Producer for Trigger {
     type Good = ();
-    type Failure = crate::error::FaultlessFailure;
+    type Failure = Infallible;
 
     #[inline]
-    #[throws(Self::Failure)]
-    fn produce(&self, _good: Self::Good) {
+    fn produce(&self, _good: Self::Good) -> Result<Self::Good, Self::Failure> {
         self.is_activated.store(true, Ordering::Relaxed);
+        Ok(())
     }
 }
