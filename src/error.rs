@@ -1,7 +1,7 @@
-//! Implements errors thrown by `market`.
-#![macro_use]
+#![allow(clippy::pattern_type_mismatch)] // False positive.
+                                         //! Implements errors thrown by `market`.
 use {
-    crate::Failure,
+    crate::{Failure, Fault},
     core::{
         convert::{Infallible, TryFrom},
         fmt::{Debug, Display},
@@ -10,49 +10,20 @@ use {
     std::error::Error,
 };
 
-// Since unable to implement TryFrom<ConsumeFailure<T>> for T due to T not being covered, this macro implements that functionality.
-/// Makes type able to be T in ConsumeFailure<T>.
-#[macro_export]
-macro_rules! consumer_fault {
-    ($ty:tt$(<$generic:tt>)?$( where $t:ty: $bounds:path)?) => {
-        #[allow(unused_qualifications)] // Where this macro will be put is unknown.
-        impl$(<$generic>)? core::convert::TryFrom<$crate::ConsumeFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
-            type Error = ();
-
-            #[inline]
-            #[fehler::throws(())]
-            fn try_from(failure: $crate::ConsumeFailure<Self>) -> Self {
-                if let $crate::ConsumeFailure::Fault(fault) = failure {
-                    fault
-                } else {
-                    fehler::throw!(())
-                }
-            }
-        }
-    };
+/// The kinds of participants in a market.
+#[derive(Clone, Copy, Debug, parse_display::Display)]
+#[display(style = "CamelCase")]
+pub enum Participant {
+    /// A producer.
+    Producer,
+    /// A consumer.
+    Consumer,
 }
 
-// Since unable to implement TryFrom<ProduceFailure<T>> for T due to T not being covered, this macro implements that functionality.
-/// Makes type able to be T in ProduceFailure<T>.
-#[macro_export]
-macro_rules! producer_fault {
-    ($ty:tt$(<$generic:tt>)?$( where $t:ty: $bounds:path)?) => {
-        #[allow(unused_qualifications)] // Where this macro will be put is unknown.
-        impl$(<$generic>)? core::convert::TryFrom<$crate::ProduceFailure<$ty$(<$generic>)?>> for $ty$(<$generic>)? $(where $t: $bounds )?{
-            type Error = ();
-
-            #[inline]
-            #[fehler::throws(())]
-            fn try_from(failure: $crate::ProduceFailure<Self>) -> Self {
-                if let $crate::ProduceFailure::Fault(fault) = failure {
-                    fault
-                } else {
-                    fehler::throw!(())
-                }
-            }
-        }
-    };
-}
+/// An error thrown when attempting to access a participant that was already taken.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("{0} was already taken")]
+pub struct TakenParticipant(pub Participant);
 
 /// The typical [`Failure`] thrown when a [`Consumer`] is unable to consume a good.
 ///
@@ -66,27 +37,20 @@ pub enum ConsumeFailure<T> {
     Fault(T),
 }
 
-#[allow(clippy::use_self)] // False positive for ConsumeFailure<U>.
-impl<T> ConsumeFailure<T> {
-    // From<ConsumeFailure<T>> for ConsumeFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
-    /// Converts `ConsumeFailure<T>` into `ConsumeFailure<U>`.
+impl<T: TryFrom<Self>> Failure for ConsumeFailure<T> {
+    type Fault = T;
+
     #[inline]
-    pub fn map_into<U>(self) -> ConsumeFailure<U>
+    fn map_from<F: Failure>(failure: F) -> Self
     where
-        U: From<T>,
+        Fault<Self>: From<Fault<F>>,
     {
-        match self {
-            Self::EmptyStock => ConsumeFailure::EmptyStock,
-            Self::Fault(fault) => ConsumeFailure::Fault(fault.into()),
+        if let Ok(fault) = Fault::<F>::try_from(failure) {
+            Self::Fault(fault.into())
+        } else {
+            Self::EmptyStock
         }
     }
-}
-
-impl<T> Failure for ConsumeFailure<T>
-where
-    T: TryFrom<Self>,
-{
-    type Fault = T;
 }
 
 // Display is implemented manually due to issue with thiserror::Error described above.
@@ -142,6 +106,20 @@ impl TryFrom<FaultlessFailure> for Infallible {
 
 impl Failure for FaultlessFailure {
     type Fault = Infallible;
+
+    #[inline]
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>,
+    {
+        #[allow(clippy::unreachable)]
+        // Required until unwrap_infallible is stabilized; see https://github.com/rust-lang/rust/issues/61695.
+        if Fault::<F>::try_from(failure).is_ok() {
+            unreachable!("Attempted to convert a fault into `FaultlessFailure`");
+        } else {
+            Self
+        }
+    }
 }
 
 /// The typical [`Failure`] thrown when a [`Producer`] is unable to produce a good.
@@ -158,7 +136,7 @@ pub enum ProduceFailure<T> {
 
 #[allow(clippy::use_self)] // False positive for ProduceFailure<T>.
 impl<T> ProduceFailure<T> {
-    // From<ProduceFailure<T>> for ProduceFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to indicate that T != U.
+    // From<ProduceFailure<T>> for ProduceFailure<U> where U: From<T> would be preferrable but this conflicts with From<T> for T due to the inability to specify that T != U.
     /// Converts `ProduceFailure<T>` into `ProduceFailure<U>`.
     #[inline]
     pub fn map_into<U>(self) -> ProduceFailure<U>
@@ -177,6 +155,18 @@ where
     T: TryFrom<Self>,
 {
     type Fault = T;
+
+    #[inline]
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>,
+    {
+        if let Ok(fault) = Fault::<F>::try_from(failure) {
+            Self::Fault(fault.into())
+        } else {
+            Self::FullStock
+        }
+    }
 }
 
 // Display is implemented manually due to issue with thiserror::Error described above.

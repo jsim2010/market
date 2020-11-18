@@ -1,17 +1,18 @@
 //! Infrastructure for producers and consumers in a market.
 //!
-//! A market is a stock of goods that can have actors act upon it. An actor can either be a producer that stores goods in the market or a consumer that retrieves goods from the market. The important thing to note about actors is that they are not mutated when they perform actions. In other words, a function definition will look like `fn action(&self)` rather than `fn action(&mut self)`.
+//! A market is a stock of goods that can have participants act upon it. A participant can be either a producer that stores goods in the market or a consumer that retrieves goods from the market. The important thing to note about participants is that they are not mutated when they perform actions. In other words, a function definition will look like `fn action(&self)` rather than `fn action(&mut self)`.
 //!
 //! In the rust stdlib, the primary example of a market is implemented by [`std::sync::mpsc::channel()`]. [`std::sync::mpsc::Sender`] is the producer and [`std::sync::mpsc::Receiver`] is the consumer.
 //!
-//! There are 2 categories of errors that actors may throw:
-//! 1. [`Failure`]: Indicates that an action was not successful.
+//! There are 2 categories of errors that participants may throw while attempting an action:
+//! 1. [`Failure`]: Indicates that the action was not successful.
 //! 2. [`Fault`]: A subset of [`Failure`]s that indicate the market is currently in a state where no attempted action will be successful until the state is changed (if possible).
 
-// error must be first to ensure consumer_fault! is defined before being used.
-mod error;
+// Use of market in derive macros requires defining crate as market.
+extern crate self as market;
 
 pub mod channel;
+mod error;
 pub mod io;
 mod map;
 pub mod process;
@@ -19,7 +20,10 @@ pub mod sync;
 pub mod thread;
 pub mod vec;
 
-pub use error::{ConsumeFailure, FaultlessFailure, ProduceFailure};
+pub use {
+    error::{ConsumeFailure, FaultlessFailure, Participant, ProduceFailure, TakenParticipant},
+    market_derive::{ConsumeFault, ProduceFault},
+};
 
 use {
     core::{
@@ -33,10 +37,29 @@ use {
 pub trait Failure: Sized {
     /// Describes the fault that could occur.
     type Fault: TryFrom<Self>;
+
+    /// Converts failure `F` into `Self`.
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>;
 }
 
 impl Failure for Infallible {
     type Fault = Self;
+
+    #[inline]
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>,
+    {
+        #[allow(clippy::unreachable)]
+        // Required until unwrap_infallible is stabilized; see https://github.com/rust-lang/rust/issues/61695.
+        if let Ok(fault) = Fault::<F>::try_from(failure) {
+            fault.into()
+        } else {
+            unreachable!("Attempted to convert a failure into `Infallible`");
+        }
+    }
 }
 
 /// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.

@@ -2,7 +2,7 @@
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
-    market::{consumer_fault, ConsumeFailure, Consumer},
+    market::{ConsumeFailure, ConsumeFault, Consumer},
 };
 
 struct MockConsumer {
@@ -48,10 +48,8 @@ impl Consumer for MockConsumer {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(ConsumeFault, Debug, PartialEq)]
 struct MockFault;
-
-consumer_fault!(MockFault);
 
 /// If `consume` returns a good, `demand` returns it.
 #[test]

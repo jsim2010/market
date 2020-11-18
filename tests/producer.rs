@@ -1,7 +1,7 @@
 use {
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::{throw, throws},
-    market::{producer_fault, ProduceFailure, Producer},
+    market::{ProduceFailure, ProduceFault, Producer},
 };
 
 struct MockProducer {
@@ -43,10 +43,8 @@ impl Producer for MockProducer {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, ProduceFault)]
 struct MockFault;
-
-producer_fault!(MockFault);
 
 /// If `produce` succeeds, `force` also succeeds.
 #[test]

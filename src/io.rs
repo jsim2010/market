@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for [`std::io::Write`] and [`std::io::Read`] trait objects.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{ConsumeFailure, Consumer, Failure, ProduceFailure, Producer, TakenParticipant},
     core::{
         cell::RefCell,
         convert::TryFrom,
@@ -13,7 +13,6 @@ use {
         error::Error,
         io::{Read, Write},
         panic::UnwindSafe,
-        sync::Arc,
     },
 };
 
@@ -29,7 +28,7 @@ pub enum ReadThreadError {
 }
 
 /// A fault thrown by [`ByteConsumer`].
-#[derive(Debug, thiserror::Error)]
+#[derive(crate::ConsumeFault, Debug, thiserror::Error)]
 pub enum ReadBytesFault {
     /// Read thread threw an error.
     #[error(transparent)]
@@ -46,8 +45,6 @@ impl From<crate::thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFau
     }
 }
 
-consumer_fault!(ReadBytesFault);
-
 /// Consumes bytes using a [`std::io::Read`] trait object.
 ///
 /// Bytes are read in a separate thread to ensure [`consume()`] is non-blocking.
@@ -58,24 +55,25 @@ struct ByteConsumer {
     /// The thread that reads bytes.
     thread: crate::thread::Thread<(), ReadThreadError>,
     /// Triggers termination of the thread.
-    terminator: Arc<crate::sync::Trigger>,
+    terminator: crate::sync::Trigger,
 }
 
 impl ByteConsumer {
     /// Creates a new [`ByteConsumer`].
     #[inline]
+    #[throws(TakenParticipant)]
     fn new<R: Read + Send + UnwindSafe + 'static>(mut reader: R) -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let terminator = Arc::new(crate::sync::Trigger::new());
-        let termination = Arc::clone(&terminator);
+        let mut channel = crate::channel::Crossbeam::new(crate::channel::Size::Infinite);
+        let mut lock = crate::sync::Lock::new();
+        let producer = channel.producer()?;
+        let hammer = lock.hammer()?;
 
         Self {
-            consumer: rx.into(),
+            consumer: channel.consumer()?,
             thread: crate::thread::Thread::new(move || {
                 let mut buffer = [0; 1024];
-                let producer = crate::channel::CrossbeamProducer::from(tx);
 
-                while termination.consume().is_err() {
+                while hammer.consume().is_err() {
                     let len = reader.read(&mut buffer)?;
                     let (bytes, _) = buffer.split_at(len);
 
@@ -84,7 +82,7 @@ impl ByteConsumer {
 
                 Ok(())
             }),
-            terminator,
+            terminator: lock.trigger()?,
         }
     }
 
@@ -114,12 +112,12 @@ impl Consumer for ByteConsumer {
             }
         }
 
-        consumption.map_err(ConsumeFailure::map_into)?
+        consumption.map_err(Self::Failure::map_from)?
     }
 }
 
 /// A fault while reading a good of type `G`.
-#[derive(Debug)]
+#[derive(crate::ConsumeFault, Debug)]
 pub enum ReadFault<G>
 where
     G: conventus::AssembleFrom<u8>,
@@ -129,8 +127,6 @@ where
     /// Unable to assemble the good from bytes.
     Assemble(<G as conventus::AssembleFrom<u8>>::Error),
 }
-
-consumer_fault!(ReadFault<G> where G: conventus::AssembleFrom<u8>);
 
 impl<G: Display> Display for ReadFault<G>
 where
@@ -171,12 +167,13 @@ pub struct Reader<G> {
 impl<G> Reader<G> {
     /// Creates a new `Reader` that composes goods from the bytes consumed by `reader`.
     #[inline]
+    #[throws(TakenParticipant)]
     pub fn new<R>(reader: R) -> Self
     where
         R: Read + Send + UnwindSafe + 'static,
     {
         Self {
-            byte_consumer: ByteConsumer::new(reader),
+            byte_consumer: ByteConsumer::new(reader)?,
             buffer: RefCell::new(Vec::new()),
             phantom: PhantomData,
         }
@@ -230,7 +227,7 @@ struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
     producer: crate::channel::CrossbeamProducer<u8>,
     /// Triggers the termination of the thread.
-    terminator: Arc<crate::sync::Trigger>,
+    terminator: crate::sync::Trigger,
     /// The thread.
     thread: crate::thread::Thread<(), WriteThreadError>,
 }
@@ -238,18 +235,18 @@ struct ByteProducer {
 impl ByteProducer {
     /// Creates a new [`ByteProducer`].
     #[inline]
+    #[throws(TakenParticipant)]
     fn new<W>(mut writer: W) -> Self
     where
         W: Write + Send + UnwindSafe + 'static,
     {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        let terminator = Arc::new(crate::sync::Trigger::new());
-        let termination = Arc::clone(&terminator);
+        let mut channel = crate::channel::Crossbeam::new(crate::channel::Size::Infinite);
+        let mut lock = crate::sync::Lock::new();
+        let hammer = lock.hammer()?;
+        let consumer = channel.consumer()?;
 
         let thread = crate::thread::Thread::new(move || {
-            let consumer = crate::channel::CrossbeamConsumer::from(rx);
-
-            while termination.consume().is_err() {
+            while hammer.consume().is_err() {
                 writer.write_all(&consumer.consume_all()?)?;
             }
 
@@ -257,8 +254,8 @@ impl ByteProducer {
         });
 
         Self {
-            producer: tx.into(),
-            terminator,
+            producer: channel.producer()?,
+            terminator: lock.trigger()?,
             thread,
         }
     }
@@ -296,12 +293,13 @@ pub struct Writer<G> {
 impl<G> Writer<G> {
     /// Creates a new `Writer` that strips bytes from goods and writes them using `writer`.
     #[inline]
+    #[throws(TakenParticipant)]
     pub fn new<W>(writer: W) -> Self
     where
         W: Write + Send + UnwindSafe + 'static,
     {
         Self {
-            byte_producer: ByteProducer::new(writer),
+            byte_producer: ByteProducer::new(writer)?,
             phantom: PhantomData,
         }
     }
@@ -332,7 +330,7 @@ where
 }
 
 /// An error while writing a good of type `G`.
-#[derive(Debug)]
+#[derive(crate::ProduceFault, Debug)]
 pub enum WriteError<G>
 where
     G: conventus::DisassembleInto<u8>,
@@ -342,8 +340,6 @@ where
     /// Writer was closed.
     Closed,
 }
-
-producer_fault!(WriteError<G> where G: conventus::DisassembleInto<u8>);
 
 impl<G: Display> Display for WriteError<G>
 where

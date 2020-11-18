@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for a [`Vec`] of actors.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{ConsumeFailure, Consumer, Fault, ProduceFailure, Producer},
     core::{
         convert::{TryFrom, TryInto},
         fmt::Debug,
@@ -24,12 +24,11 @@ impl<G, T> Collector<G, T> {
 
     /// Adds `consumer` to the end of the [`Consumer`]s held by `self`.
     #[inline]
-    pub fn push<C>(&mut self, consumer: std::rc::Rc<C>)
+    pub fn push<C>(&mut self, consumer: C)
     where
         C: Consumer + 'static,
         G: From<C::Good> + 'static,
-        T: TryFrom<ConsumeFailure<T>> + 'static,
-        ConsumeFailure<T>: From<C::Failure>,
+        T: From<Fault<C::Failure>> + TryFrom<ConsumeFailure<T>> + 'static,
     {
         self.consumers
             .push(Box::new(crate::map::Adapter::new(consumer)));
@@ -95,12 +94,10 @@ impl<G, T> Distributor<G, T> {
 
     /// Adds `producer` to the end of the [`Producers`]s held by `self`.
     #[inline]
-    pub fn push<P>(&mut self, producer: std::rc::Rc<P>)
+    pub fn push<P: Producer + 'static>(&mut self, producer: P)
     where
-        P: Producer + 'static,
         G: TryInto<P::Good> + 'static,
-        ProduceFailure<T>: From<P::Failure>,
-        T: TryFrom<ProduceFailure<T>> + 'static,
+        T: From<Fault<P::Failure>> + TryFrom<ProduceFailure<T>> + 'static,
     {
         self.producers
             .push(Box::new(crate::map::Converter::new(producer)));

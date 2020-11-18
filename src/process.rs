@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for the standard I/O streams of a process.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
     core::{cell::RefCell, convert::TryFrom, fmt::Debug},
     fehler::{throw, throws},
     std::{
@@ -26,6 +26,39 @@ pub struct Process<I, O, E> {
     waiter: Waiter<I, O, E>,
 }
 
+/// Returns a [`Writer`] of the stdin of `child`.
+#[throws(CreateProcessErrorKind)]
+fn input<I>(child: &mut Child) -> crate::io::Writer<I> {
+    crate::io::Writer::new(
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| UncapturedStdioError("stdin".to_string()))?,
+    )?
+}
+
+/// Returns a [`Reader`] of the stdout of `child`.
+#[throws(CreateProcessErrorKind)]
+fn output<O>(child: &mut Child) -> crate::io::Reader<O> {
+    crate::io::Reader::new(
+        child
+            .stdout
+            .take()
+            .ok_or_else(|| UncapturedStdioError("stdout".to_string()))?,
+    )?
+}
+
+/// Returns a [`Reader`] of the stderr of `child`.
+#[throws(CreateProcessErrorKind)]
+fn error<E>(child: &mut Child) -> crate::io::Reader<E> {
+    crate::io::Reader::new(
+        child
+            .stderr
+            .take()
+            .ok_or_else(|| UncapturedStdioError("stderr".to_string()))?,
+    )?
+}
+
 impl<I, O, E> Process<I, O, E> {
     /// Creates a new `Process` that exectues `command`.
     #[inline]
@@ -38,15 +71,15 @@ impl<I, O, E> Process<I, O, E> {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| CreateProcessError::new(&command_string, error))?;
-        let input = Rc::new(crate::io::Writer::new(child.stdin.take().ok_or_else(
-            || CreateProcessError::new(&command_string, UncapturedStdioError("stdin".to_string())),
-        )?));
-        let output = Rc::new(crate::io::Reader::new(child.stdout.take().ok_or_else(
-            || CreateProcessError::new(&command_string, UncapturedStdioError("stdout".to_string())),
-        )?));
-        let error = Rc::new(crate::io::Reader::new(child.stderr.take().ok_or_else(
-            || CreateProcessError::new(&command_string, UncapturedStdioError("stderr".to_string())),
-        )?));
+        let input = Rc::new(
+            input(&mut child).map_err(|error| CreateProcessError::new(&command_string, error))?,
+        );
+        let output = Rc::new(
+            output(&mut child).map_err(|error| CreateProcessError::new(&command_string, error))?,
+        );
+        let error = Rc::new(
+            error(&mut child).map_err(|err| CreateProcessError::new(&command_string, err))?,
+        );
 
         Self {
             input: Rc::clone(&input),
@@ -129,7 +162,7 @@ impl<I, O, E> Consumer for Waiter<I, O, E> {
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        if let Some(status) = self
+        if self
             .child
             .borrow_mut()
             .try_wait()
@@ -137,15 +170,8 @@ impl<I, O, E> Consumer for Waiter<I, O, E> {
                 command: self.command.clone(),
                 error: error.into(),
             })?
+            .is_some()
         {
-            // Calling wait() is recommended to ensure resources are released. Since try_wait() was successful, wait() should not block.
-            #[allow(unused_results)] // Status was already retrieved by try_wait().
-            {
-                self.child.borrow_mut().wait().map_err(|error| WaitFault {
-                    command: self.command.clone(),
-                    error: error.into(),
-                })?;
-            }
             // Terminate the Writer and Reader threads.
             self.input.terminate().map_err(|error| WaitFault {
                 command: self.command.clone(),
@@ -159,7 +185,11 @@ impl<I, O, E> Consumer for Waiter<I, O, E> {
                 command: self.command.clone(),
                 error: error.into(),
             })?;
-            status
+            // Calling wait() is recommended to ensure resources are released. Since try_wait() was successful, wait() should not block.
+            self.child.borrow_mut().wait().map_err(|error| WaitFault {
+                command: self.command.clone(),
+                error: error.into(),
+            })?
         } else {
             throw!(ConsumeFailure::EmptyStock);
         }
@@ -173,14 +203,14 @@ pub struct CreateProcessError {
     /// The command attempting to be created.
     command: String,
     /// The error.
-    error: CreateProcessErrorType,
+    error: CreateProcessErrorKind,
 }
 
 impl CreateProcessError {
     /// Creates a new `CreateProcessError`.
     fn new<T>(command: &str, error: T) -> Self
     where
-        T: Into<CreateProcessErrorType>,
+        T: Into<CreateProcessErrorKind>,
     {
         Self {
             command: command.to_string(),
@@ -189,15 +219,18 @@ impl CreateProcessError {
     }
 }
 
-/// An type of error creating a `Process`.
+/// The kind of an error thrown while creating a `Process`.
 #[derive(Debug, thiserror::Error)]
-pub enum CreateProcessErrorType {
-    /// I/O error.
+pub enum CreateProcessErrorKind {
+    /// An I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
     /// Stdio is not captured.
     #[error(transparent)]
     UncapturedStdio(#[from] UncapturedStdioError),
+    /// A market actor has already been taken.
+    #[error(transparent)]
+    TakenParticipant(#[from] TakenParticipant),
 }
 
 /// An error capturing a stdio.

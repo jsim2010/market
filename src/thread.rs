@@ -11,15 +11,13 @@ use {
 type Panic = Box<dyn Any + Send + 'static>;
 
 /// An error while consuming the outcome of a thread.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(crate::ConsumeFault, Debug, Eq, PartialEq)]
 pub enum Fault<E> {
     /// The thread was killed.
     Killed,
     /// The thread threw an error.
     Error(E),
 }
-
-consumer_fault!(Fault<E>);
 
 impl<E: Display> Display for Fault<E> {
     #[inline]

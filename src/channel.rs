@@ -1,18 +1,78 @@
 //! Implements [`Producer`] and [`Consumer`] for various types of channels.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
+    crate::{ConsumeFailure, Consumer, Participant, ProduceFailure, Producer, TakenParticipant},
     core::fmt::Debug,
     fehler::throws,
     std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError},
 };
 
+/// The size of the stock for a channel.
+#[derive(Clone, Copy, Debug)]
+pub enum Size {
+    /// Infinite size.
+    Infinite,
+    /// Finite size.
+    Finite(usize),
+}
+
+// TODO: Instead of having a struct for each channel kind, should have a generic struct that can create any kind of channel.
+/// Represents a [`crossbeam`] channel.
+#[derive(Debug)]
+pub struct Crossbeam<G> {
+    /// The [`Producer`] of the channel.
+    producer: Option<CrossbeamProducer<G>>,
+    /// The [`Consumer`] of the channel.
+    consumer: Option<CrossbeamConsumer<G>>,
+}
+
+impl<G> Crossbeam<G> {
+    /// Creates a new [`crossbeam`] channel with a stock size equal to `size`.
+    #[inline]
+    #[must_use]
+    pub fn new(size: Size) -> Self {
+        Self::from(match size {
+            Size::Infinite => crossbeam_channel::unbounded(),
+            Size::Finite(value) => crossbeam_channel::bounded(value),
+        })
+    }
+
+    /// Takes the [`Producer`] from `self`.
+    ///
+    /// If the producer has already been taken, throws [`TakenParticipant`].
+    #[inline]
+    #[throws(TakenParticipant)]
+    pub fn producer(&mut self) -> CrossbeamProducer<G> {
+        self.producer
+            .take()
+            .ok_or(TakenParticipant(Participant::Producer))?
+    }
+
+    /// Takes the [`Consumer`] from `self`.
+    ///
+    /// If the consumer has already been taken, throws [`TakenParticipant`].
+    #[inline]
+    #[throws(TakenParticipant)]
+    pub fn consumer(&mut self) -> CrossbeamConsumer<G> {
+        self.consumer
+            .take()
+            .ok_or(TakenParticipant(Participant::Consumer))?
+    }
+}
+
+impl<G> From<(crossbeam_channel::Sender<G>, crossbeam_channel::Receiver<G>)> for Crossbeam<G> {
+    #[inline]
+    fn from(participants: (crossbeam_channel::Sender<G>, crossbeam_channel::Receiver<G>)) -> Self {
+        Self {
+            producer: Some(participants.0.into()),
+            consumer: Some(participants.1.into()),
+        }
+    }
+}
+
 /// A fault caused by the other side of the channel being dropped.
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[derive(Clone, crate::ConsumeFault, crate::ProduceFault, Copy, Debug, thiserror::Error)]
 #[error("channel is disconnected")]
 pub struct DisconnectedFault;
-
-consumer_fault!(DisconnectedFault);
-producer_fault!(DisconnectedFault);
 
 impl From<TryRecvError> for ConsumeFailure<DisconnectedFault> {
     #[inline]
