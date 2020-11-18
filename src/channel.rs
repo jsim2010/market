@@ -1,6 +1,9 @@
 //! Implements [`Producer`] and [`Consumer`] for various types of channels.
 use {
-    crate::{ConsumeFailure, Consumer, Participant, ProduceFailure, Producer, TakenParticipant},
+    crate::{
+        ConsumeFailure, ConsumeFault, Consumer, Participant, ProduceFailure, ProduceFault,
+        Producer, TakenParticipant,
+    },
     core::fmt::Debug,
     fehler::throws,
     std::sync::mpsc::{Receiver, SendError, Sender, TryRecvError},
@@ -70,7 +73,7 @@ impl<G> From<(crossbeam_channel::Sender<G>, crossbeam_channel::Receiver<G>)> for
 }
 
 /// A fault caused by the other side of the channel being dropped.
-#[derive(Clone, crate::ConsumeFault, crate::ProduceFault, Copy, Debug, thiserror::Error)]
+#[derive(Clone, ConsumeFault, ProduceFault, Copy, Debug, thiserror::Error)]
 #[error("channel is disconnected")]
 pub struct DisconnectedFault;
 

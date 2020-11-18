@@ -21,49 +21,17 @@ pub mod thread;
 pub mod vec;
 
 pub use {
-    error::{ConsumeFailure, FaultlessFailure, Participant, ProduceFailure, TakenParticipant},
+    error::{
+        ConsumeFailure, Failure, Fault, FaultlessFailure, Participant, ProduceFailure,
+        TakenParticipant,
+    },
     market_derive::{ConsumeFault, ProduceFault},
 };
 
 use {
-    core::{
-        convert::{Infallible, TryFrom},
-        fmt::Debug,
-    },
+    core::{convert::TryFrom, fmt::Debug},
     fehler::{throw, throws},
 };
-
-/// Describes the failures that could occur during a given action.
-pub trait Failure: Sized {
-    /// Describes the fault that could occur.
-    type Fault: TryFrom<Self>;
-
-    /// Converts failure `F` into `Self`.
-    fn map_from<F: Failure>(failure: F) -> Self
-    where
-        Fault<Self>: From<Fault<F>>;
-}
-
-impl Failure for Infallible {
-    type Fault = Self;
-
-    #[inline]
-    fn map_from<F: Failure>(failure: F) -> Self
-    where
-        Fault<Self>: From<Fault<F>>,
-    {
-        #[allow(clippy::unreachable)]
-        // Required until unwrap_infallible is stabilized; see https://github.com/rust-lang/rust/issues/61695.
-        if let Ok(fault) = Fault::<F>::try_from(failure) {
-            fault.into()
-        } else {
-            unreachable!("Attempted to convert a failure into `Infallible`");
-        }
-    }
-}
-
-/// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.
-pub type Fault<F> = <F as Failure>::Fault;
 
 /// Stores goods in a market.
 ///

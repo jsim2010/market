@@ -1,6 +1,9 @@
 //! Implements [`Producer`] and [`Consumer`] for [`std::io::Write`] and [`std::io::Read`] trait objects.
 use {
-    crate::{ConsumeFailure, Consumer, Failure, ProduceFailure, Producer, TakenParticipant},
+    crate::{
+        channel, sync, thread, ConsumeFailure, ConsumeFault, Consumer, Failure, ProduceFailure,
+        ProduceFault, Producer, TakenParticipant,
+    },
     core::{
         cell::RefCell,
         convert::TryFrom,
@@ -24,23 +27,23 @@ pub enum ReadThreadError {
     Io(#[from] std::io::Error),
     /// [`Consumer`] to which the read thread is sending bytes was dropped.
     #[error(transparent)]
-    Closed(#[from] crate::channel::DisconnectedFault),
+    Closed(#[from] channel::DisconnectedFault),
 }
 
 /// A fault thrown by [`ByteConsumer`].
-#[derive(crate::ConsumeFault, Debug, thiserror::Error)]
+#[derive(ConsumeFault, Debug, thiserror::Error)]
 pub enum ReadBytesFault {
     /// Read thread threw an error.
     #[error(transparent)]
-    Thread(#[from] crate::thread::Fault<ReadThreadError>),
+    Thread(#[from] thread::Fault<ReadThreadError>),
     /// [`Producer`] in read thread was dropped.
     #[error(transparent)]
-    Channel(#[from] crate::channel::DisconnectedFault),
+    Channel(#[from] channel::DisconnectedFault),
 }
 
-impl From<crate::thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFault> {
+impl From<thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFault> {
     #[inline]
-    fn from(fault: crate::thread::Fault<ReadThreadError>) -> Self {
+    fn from(fault: thread::Fault<ReadThreadError>) -> Self {
         Self::Fault(fault.into())
     }
 }
@@ -51,11 +54,11 @@ impl From<crate::thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFau
 #[derive(Debug)]
 struct ByteConsumer {
     /// Consumes bytes that have been read.
-    consumer: crate::channel::CrossbeamConsumer<u8>,
+    consumer: channel::CrossbeamConsumer<u8>,
     /// The thread that reads bytes.
-    thread: crate::thread::Thread<(), ReadThreadError>,
+    thread: thread::Thread<(), ReadThreadError>,
     /// Triggers termination of the thread.
-    terminator: crate::sync::Trigger,
+    terminator: sync::Trigger,
 }
 
 impl ByteConsumer {
@@ -63,14 +66,14 @@ impl ByteConsumer {
     #[inline]
     #[throws(TakenParticipant)]
     fn new<R: Read + Send + UnwindSafe + 'static>(mut reader: R) -> Self {
-        let mut channel = crate::channel::Crossbeam::new(crate::channel::Size::Infinite);
-        let mut lock = crate::sync::Lock::new();
+        let mut channel = channel::Crossbeam::new(channel::Size::Infinite);
+        let mut lock = sync::Lock::new();
         let producer = channel.producer()?;
         let hammer = lock.hammer()?;
 
         Self {
             consumer: channel.consumer()?,
-            thread: crate::thread::Thread::new(move || {
+            thread: thread::Thread::new(move || {
                 let mut buffer = [0; 1024];
 
                 while hammer.consume().is_err() {
@@ -88,7 +91,7 @@ impl ByteConsumer {
 
     /// Terminates the read thread.
     #[allow(unused_must_use)] // Trigger::produce() cannot fail.
-    #[throws(crate::thread::Fault<ReadThreadError>)]
+    #[throws(thread::Fault<ReadThreadError>)]
     fn terminate(&self) {
         self.terminator.produce(());
 
@@ -117,7 +120,7 @@ impl Consumer for ByteConsumer {
 }
 
 /// A fault while reading a good of type `G`.
-#[derive(crate::ConsumeFault, Debug)]
+#[derive(ConsumeFault, Debug)]
 pub enum ReadFault<G>
 where
     G: conventus::AssembleFrom<u8>,
@@ -181,7 +184,7 @@ impl<G> Reader<G> {
 
     /// Terminates the read thread.
     #[inline]
-    #[throws(crate::thread::Fault<ReadThreadError>)]
+    #[throws(thread::Fault<ReadThreadError>)]
     pub fn terminate(&self) {
         self.byte_consumer.terminate()?
     }
@@ -216,7 +219,7 @@ pub enum WriteThreadError {
     Io(#[from] std::io::Error),
     /// The [`Producer`] sending bytes to the write thread was dropped.
     #[error(transparent)]
-    Closed(#[from] crate::channel::DisconnectedFault),
+    Closed(#[from] channel::DisconnectedFault),
 }
 
 /// Produces bytes using a [`std::io::Write`] trait object.
@@ -225,11 +228,11 @@ pub enum WriteThreadError {
 #[derive(Debug)]
 struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
-    producer: crate::channel::CrossbeamProducer<u8>,
+    producer: channel::CrossbeamProducer<u8>,
     /// Triggers the termination of the thread.
-    terminator: crate::sync::Trigger,
+    terminator: sync::Trigger,
     /// The thread.
-    thread: crate::thread::Thread<(), WriteThreadError>,
+    thread: thread::Thread<(), WriteThreadError>,
 }
 
 impl ByteProducer {
@@ -240,12 +243,12 @@ impl ByteProducer {
     where
         W: Write + Send + UnwindSafe + 'static,
     {
-        let mut channel = crate::channel::Crossbeam::new(crate::channel::Size::Infinite);
-        let mut lock = crate::sync::Lock::new();
+        let mut channel = channel::Crossbeam::new(channel::Size::Infinite);
+        let mut lock = sync::Lock::new();
         let hammer = lock.hammer()?;
         let consumer = channel.consumer()?;
 
-        let thread = crate::thread::Thread::new(move || {
+        let thread = thread::Thread::new(move || {
             while hammer.consume().is_err() {
                 writer.write_all(&consumer.consume_all()?)?;
             }
@@ -262,7 +265,7 @@ impl ByteProducer {
 
     /// Terminates the write thread.
     #[allow(unused_must_use)] // Trigger::produce() cannot fail.
-    #[throws(crate::thread::Fault<WriteThreadError>)]
+    #[throws(thread::Fault<WriteThreadError>)]
     fn terminate(&self) {
         self.terminator.produce(());
 
@@ -272,7 +275,7 @@ impl ByteProducer {
 
 impl Producer for ByteProducer {
     type Good = u8;
-    type Failure = ProduceFailure<crate::channel::DisconnectedFault>;
+    type Failure = ProduceFailure<channel::DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -306,7 +309,7 @@ impl<G> Writer<G> {
 
     /// Terminates the writing thread.
     #[inline]
-    #[throws(crate::thread::Fault<WriteThreadError>)]
+    #[throws(thread::Fault<WriteThreadError>)]
     pub fn terminate(&self) {
         self.byte_producer.terminate()?
     }
@@ -330,7 +333,7 @@ where
 }
 
 /// An error while writing a good of type `G`.
-#[derive(crate::ProduceFault, Debug)]
+#[derive(ProduceFault, Debug)]
 pub enum WriteError<G>
 where
     G: conventus::DisassembleInto<u8>,
@@ -356,12 +359,12 @@ where
 
 impl<G: Debug + Display> Error for WriteError<G> where G: conventus::DisassembleInto<u8> {}
 
-impl<G> From<crate::channel::DisconnectedFault> for WriteError<G>
+impl<G> From<channel::DisconnectedFault> for WriteError<G>
 where
     G: conventus::DisassembleInto<u8>,
 {
     #[inline]
-    fn from(_: crate::channel::DisconnectedFault) -> Self {
+    fn from(_: channel::DisconnectedFault) -> Self {
         Self::Closed
     }
 }

@@ -1,7 +1,6 @@
+//! Implements errors thrown by `market`.
 #![allow(clippy::pattern_type_mismatch)] // False positive.
-                                         //! Implements errors thrown by `market`.
 use {
-    crate::{Failure, Fault},
     core::{
         convert::{Infallible, TryFrom},
         fmt::{Debug, Display},
@@ -9,6 +8,38 @@ use {
     fehler::{throw, throws},
     std::error::Error,
 };
+
+/// Describes the failures that could occur during a given action.
+pub trait Failure: Sized {
+    /// Describes the fault that could occur.
+    type Fault: TryFrom<Self>;
+
+    /// Converts failure `F` into `Self`.
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>;
+}
+
+impl Failure for Infallible {
+    type Fault = Self;
+
+    #[inline]
+    fn map_from<F: Failure>(failure: F) -> Self
+    where
+        Fault<Self>: From<Fault<F>>,
+    {
+        #[allow(clippy::unreachable)]
+        // Required until unwrap_infallible is stabilized; see https://github.com/rust-lang/rust/issues/61695.
+        if let Ok(fault) = Fault::<F>::try_from(failure) {
+            fault.into()
+        } else {
+            unreachable!("Attempted to convert a failure into `Infallible`");
+        }
+    }
+}
+
+/// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.
+pub type Fault<F> = <F as Failure>::Fault;
 
 /// The kinds of participants in a market.
 #[derive(Clone, Copy, Debug, parse_display::Display)]

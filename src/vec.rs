@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for a [`Vec`] of actors.
 use {
-    crate::{ConsumeFailure, Consumer, Fault, ProduceFailure, Producer},
+    crate::{map, ConsumeFailure, Consumer, Fault, ProduceFailure, Producer},
     core::{
         convert::{TryFrom, TryInto},
         fmt::Debug,
@@ -30,8 +30,7 @@ impl<G, T> Collector<G, T> {
         G: From<C::Good> + 'static,
         T: From<Fault<C::Failure>> + TryFrom<ConsumeFailure<T>> + 'static,
     {
-        self.consumers
-            .push(Box::new(crate::map::Adapter::new(consumer)));
+        self.consumers.push(Box::new(map::Adapter::new(consumer)));
     }
 }
 
@@ -99,8 +98,7 @@ impl<G, T> Distributor<G, T> {
         G: TryInto<P::Good> + 'static,
         T: From<Fault<P::Failure>> + TryFrom<ProduceFailure<T>> + 'static,
     {
-        self.producers
-            .push(Box::new(crate::map::Converter::new(producer)));
+        self.producers.push(Box::new(map::Converter::new(producer)));
     }
 }
 

@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for the standard I/O streams of a process.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
+    crate::{io, thread, ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
     core::{cell::RefCell, convert::TryFrom, fmt::Debug},
     fehler::{throw, throws},
     std::{
@@ -17,19 +17,19 @@ use {
 #[derive(Debug)]
 pub struct Process<I, O, E> {
     /// The stdin of the process.
-    input: Rc<crate::io::Writer<I>>,
+    input: Rc<io::Writer<I>>,
     /// The stdout of the process.
-    output: Rc<crate::io::Reader<O>>,
+    output: Rc<io::Reader<O>>,
     /// The stderr of the process.
-    error: Rc<crate::io::Reader<E>>,
+    error: Rc<io::Reader<E>>,
     /// The `Waiter` of the process.
     waiter: Waiter<I, O, E>,
 }
 
 /// Returns a [`Writer`] of the stdin of `child`.
 #[throws(CreateProcessErrorKind)]
-fn input<I>(child: &mut Child) -> crate::io::Writer<I> {
-    crate::io::Writer::new(
+fn input<I>(child: &mut Child) -> io::Writer<I> {
+    io::Writer::new(
         child
             .stdin
             .take()
@@ -39,8 +39,8 @@ fn input<I>(child: &mut Child) -> crate::io::Writer<I> {
 
 /// Returns a [`Reader`] of the stdout of `child`.
 #[throws(CreateProcessErrorKind)]
-fn output<O>(child: &mut Child) -> crate::io::Reader<O> {
-    crate::io::Reader::new(
+fn output<O>(child: &mut Child) -> io::Reader<O> {
+    io::Reader::new(
         child
             .stdout
             .take()
@@ -50,8 +50,8 @@ fn output<O>(child: &mut Child) -> crate::io::Reader<O> {
 
 /// Returns a [`Reader`] of the stderr of `child`.
 #[throws(CreateProcessErrorKind)]
-fn error<E>(child: &mut Child) -> crate::io::Reader<E> {
-    crate::io::Reader::new(
+fn error<E>(child: &mut Child) -> io::Reader<E> {
+    io::Reader::new(
         child
             .stderr
             .take()
@@ -97,7 +97,7 @@ impl<I, O, E> Process<I, O, E> {
 
     /// Returns the `Consumer` of the stderr pipe.
     #[inline]
-    pub const fn stderr(&self) -> &Rc<crate::io::Reader<E>> {
+    pub const fn stderr(&self) -> &Rc<io::Reader<E>> {
         &self.error
     }
 
@@ -114,7 +114,7 @@ where
     <O as conventus::AssembleFrom<u8>>::Error: 'static,
 {
     type Good = O;
-    type Failure = ConsumeFailure<crate::io::ReadFault<O>>;
+    type Failure = ConsumeFailure<io::ReadFault<O>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -129,7 +129,7 @@ where
     <I as conventus::DisassembleInto<u8>>::Error: 'static,
 {
     type Good = I;
-    type Failure = ProduceFailure<crate::io::WriteError<I>>;
+    type Failure = ProduceFailure<io::WriteError<I>>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -148,11 +148,11 @@ pub struct Waiter<I, O, E> {
     /// The process.
     child: RefCell<Child>,
     /// The input writer.
-    input: Rc<crate::io::Writer<I>>,
+    input: Rc<io::Writer<I>>,
     /// The output reader.
-    output: Rc<crate::io::Reader<O>>,
+    output: Rc<io::Reader<O>>,
     /// The error output reader.
-    error: Rc<crate::io::Reader<E>>,
+    error: Rc<io::Reader<E>>,
 }
 
 impl<I, O, E> Consumer for Waiter<I, O, E> {
@@ -246,10 +246,10 @@ pub enum WaitError {
     Io(#[from] std::io::Error),
     /// Error thrown while terminating a write thread.
     #[error(transparent)]
-    Write(#[from] crate::thread::Fault<crate::io::WriteThreadError>),
+    Write(#[from] thread::Fault<io::WriteThreadError>),
     /// Error thrown while terminating a read thread.
     #[error(transparent)]
-    Read(#[from] crate::thread::Fault<crate::io::ReadThreadError>),
+    Read(#[from] thread::Fault<io::ReadThreadError>),
 }
 
 /// An error waiting for a `Process` to exit.

@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for a thread.
 use {
-    crate::{ConsumeFailure, Consumer, Producer},
+    crate::{channel, ConsumeFailure, ConsumeFault, Consumer, Producer},
     core::fmt::{Debug, Display},
     fehler::{throw, throws},
     log::error,
@@ -11,7 +11,7 @@ use {
 type Panic = Box<dyn Any + Send + 'static>;
 
 /// An error while consuming the outcome of a thread.
-#[derive(crate::ConsumeFault, Debug, Eq, PartialEq)]
+#[derive(ConsumeFault, Debug, Eq, PartialEq)]
 pub enum Fault<E> {
     /// The thread was killed.
     Killed,
@@ -62,7 +62,7 @@ impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
 #[derive(Debug)]
 pub struct Thread<S, E> {
     /// Consumes the outcome of the thread.
-    consumer: crate::channel::CrossbeamConsumer<Outcome<S, E>>,
+    consumer: channel::CrossbeamConsumer<Outcome<S, E>>,
     /// The handle to the thread.
     handle: JoinHandle<()>,
 }
@@ -83,7 +83,7 @@ where
         Self {
             handle: std::thread::spawn(move || {
                 // Although force is preferable to produce, force requires the outcome impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
-                if let Err(failure) = crate::channel::CrossbeamProducer::from(tx)
+                if let Err(failure) = channel::CrossbeamProducer::from(tx)
                     .produce(Outcome::from(std::panic::catch_unwind(|| (call)())))
                 {
                     error!(

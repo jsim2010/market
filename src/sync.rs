@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
-    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
+    crate::{channel, ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
     core::sync::atomic::{AtomicBool, Ordering},
     fehler::throws,
 };
@@ -11,7 +11,7 @@ use {
 #[derive(Debug)]
 pub struct Lock {
     /// Provides communication between the [`Trigger`] and the [`Hammer`] of the lock.
-    channel: crate::channel::Crossbeam<()>,
+    channel: channel::Crossbeam<()>,
 }
 
 impl Lock {
@@ -45,7 +45,7 @@ impl Default for Lock {
     #[inline]
     fn default() -> Self {
         Self {
-            channel: crate::channel::Crossbeam::new(crate::channel::Size::Finite(1)),
+            channel: channel::Crossbeam::new(channel::Size::Finite(1)),
         }
     }
 }
@@ -56,12 +56,12 @@ pub struct Trigger {
     /// If the trigger has ben activated.
     is_activated: AtomicBool,
     /// The [`Producer`].
-    producer: crate::channel::CrossbeamProducer<()>,
+    producer: channel::CrossbeamProducer<()>,
 }
 
-impl From<crate::channel::CrossbeamProducer<()>> for Trigger {
+impl From<channel::CrossbeamProducer<()>> for Trigger {
     #[inline]
-    fn from(producer: crate::channel::CrossbeamProducer<()>) -> Self {
+    fn from(producer: channel::CrossbeamProducer<()>) -> Self {
         Self {
             is_activated: false.into(),
             producer,
@@ -71,7 +71,7 @@ impl From<crate::channel::CrossbeamProducer<()>> for Trigger {
 
 impl Producer for Trigger {
     type Good = ();
-    type Failure = ProduceFailure<crate::channel::DisconnectedFault>;
+    type Failure = ProduceFailure<channel::DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -91,12 +91,12 @@ pub struct Hammer {
     /// If the hammer has been activated.
     is_activated: AtomicBool,
     /// The [`Consumer`].
-    consumer: crate::channel::CrossbeamConsumer<()>,
+    consumer: channel::CrossbeamConsumer<()>,
 }
 
 impl Consumer for Hammer {
     type Good = ();
-    type Failure = ConsumeFailure<crate::channel::DisconnectedFault>;
+    type Failure = ConsumeFailure<channel::DisconnectedFault>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -113,9 +113,9 @@ impl Consumer for Hammer {
     }
 }
 
-impl From<crate::channel::CrossbeamConsumer<()>> for Hammer {
+impl From<channel::CrossbeamConsumer<()>> for Hammer {
     #[inline]
-    fn from(consumer: crate::channel::CrossbeamConsumer<()>) -> Self {
+    fn from(consumer: channel::CrossbeamConsumer<()>) -> Self {
         Self {
             is_activated: false.into(),
             consumer,
