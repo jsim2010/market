@@ -2,8 +2,10 @@
 name = "market_derive"
 version = "0.1.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
-edition = "2018"
+description = "Derive macros for market"
 license = "MIT"
+repository = "https://github.com/jsim2010/market"
+edition = "2018"
 
 [lib]
 proc-macro = true
