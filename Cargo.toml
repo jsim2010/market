@@ -15,6 +15,6 @@ conventus = "0.2.0"
 crossbeam-channel = "0.5.0"
 fehler = "1.0.0"
 log = "0.4.0"
-market_derive = { path = "derive" }
+market_derive = { path = "derive", version = "0.1.0" }
 parse-display = "0.1.1"
 thiserror = "1.0.0"
