@@ -1,6 +1,6 @@
 [package]
 name = "market"
-version = "0.22.0"
+version = "0.23.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
 description = "Infrastructure for producers and consumers"
 license = "MIT"
