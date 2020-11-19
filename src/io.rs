@@ -66,7 +66,7 @@ impl ByteConsumer {
     #[inline]
     #[throws(TakenParticipant)]
     fn new<R: Read + Send + UnwindSafe + 'static>(mut reader: R) -> Self {
-        let mut channel = channel::Crossbeam::new(channel::Size::Infinite);
+        let mut channel = channel::Channel::<channel::Crossbeam<u8>>::new(channel::Size::Infinite);
         let mut lock = sync::Lock::new();
         let producer = channel.producer()?;
         let hammer = lock.hammer()?;
@@ -228,7 +228,7 @@ pub enum WriteThreadError {
 #[derive(Debug)]
 struct ByteProducer {
     /// Produces bytes to be written by the writing thread.
-    producer: channel::CrossbeamProducer<u8>,
+    producer: channel::KindProducer<channel::Crossbeam<u8>>,
     /// Triggers the termination of the thread.
     terminator: sync::Trigger,
     /// The thread.
@@ -243,7 +243,7 @@ impl ByteProducer {
     where
         W: Write + Send + UnwindSafe + 'static,
     {
-        let mut channel = channel::Crossbeam::new(channel::Size::Infinite);
+        let mut channel = channel::Channel::<channel::Crossbeam<u8>>::new(channel::Size::Infinite);
         let mut lock = sync::Lock::new();
         let hammer = lock.hammer()?;
         let consumer = channel.consumer()?;

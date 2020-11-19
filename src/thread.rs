@@ -62,7 +62,7 @@ impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
 #[derive(Debug)]
 pub struct Thread<S, E> {
     /// Consumes the outcome of the thread.
-    consumer: channel::CrossbeamConsumer<Outcome<S, E>>,
+    consumer: channel::KindConsumer<channel::Crossbeam<Outcome<S, E>>>,
     /// The handle to the thread.
     handle: JoinHandle<()>,
 }
@@ -83,8 +83,9 @@ where
         Self {
             handle: std::thread::spawn(move || {
                 // Although force is preferable to produce, force requires the outcome impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
-                if let Err(failure) = channel::CrossbeamProducer::from(tx)
-                    .produce(Outcome::from(std::panic::catch_unwind(|| (call)())))
+                if let Err(failure) =
+                    channel::KindProducer::<channel::Crossbeam<Outcome<S, E>>>::from(tx)
+                        .produce(Outcome::from(std::panic::catch_unwind(|| (call)())))
                 {
                     error!(
                         "Failed to send outcome of `{}` thread: {}",

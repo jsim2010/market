@@ -11,7 +11,7 @@ use {
 #[derive(Debug)]
 pub struct Lock {
     /// Provides communication between the [`Trigger`] and the [`Hammer`] of the lock.
-    channel: channel::Crossbeam<()>,
+    channel: channel::Channel<channel::Crossbeam<()>>,
 }
 
 impl Lock {
@@ -45,7 +45,7 @@ impl Default for Lock {
     #[inline]
     fn default() -> Self {
         Self {
-            channel: channel::Crossbeam::new(channel::Size::Finite(1)),
+            channel: channel::Channel::new(channel::Size::Finite(1)),
         }
     }
 }
@@ -56,12 +56,12 @@ pub struct Trigger {
     /// If the trigger has ben activated.
     is_activated: AtomicBool,
     /// The [`Producer`].
-    producer: channel::CrossbeamProducer<()>,
+    producer: channel::KindProducer<channel::Crossbeam<()>>,
 }
 
-impl From<channel::CrossbeamProducer<()>> for Trigger {
+impl From<channel::KindProducer<channel::Crossbeam<()>>> for Trigger {
     #[inline]
-    fn from(producer: channel::CrossbeamProducer<()>) -> Self {
+    fn from(producer: channel::KindProducer<channel::Crossbeam<()>>) -> Self {
         Self {
             is_activated: false.into(),
             producer,
