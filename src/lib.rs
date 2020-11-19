@@ -37,7 +37,7 @@ use {
 ///
 /// Actions that can be performed have the following name convention:
 ///
-/// 1. An action shall have the following components: desire and quantity.
+/// 1. An action shall have the following components: desire, quantity and good.
 /// 2. If an action has multiple non-empty components, they shall be split by an underscore `_`.
 ///
 /// Desire
@@ -47,6 +47,10 @@ use {
 /// Quantity
 /// 1. (empty): The action shall attempt a single good.
 /// 2. `all`: The action shall attempt multiple goods.
+///
+/// Good
+/// 1. (empty): The action shall produce the provided good.
+/// 2. `default`: The action shall produce the default of good.
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for produce(); see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The item being produced.
@@ -74,6 +78,18 @@ pub trait Producer {
         for good in goods {
             self.produce(good)?
         }
+    }
+
+    /// Stores the default of the good of the market without blocking.
+    ///
+    /// If [`produce_default()`] catches [`Failure`] `F`, it shall throw `F`.
+    #[inline]
+    #[throws(Self::Failure)]
+    fn produce_default(&self)
+    where
+        Self::Good: Default,
+    {
+        self.produce(Self::Good::default())?
     }
 
     /// Stores `good` in the market, blocking until space is available.
