@@ -1,6 +1,6 @@
 //! Implements actors that map goods and errors.
 use {
-    crate::{Consumer, Failure, Fault, Producer},
+    crate::{Consumer, Failure, Producer},
     core::{convert::TryInto, marker::PhantomData},
     fehler::throws,
 };
@@ -31,8 +31,7 @@ impl<C, G, F> Consumer for Adapter<C, G, F>
 where
     C: Consumer,
     G: From<C::Good>,
-    F: Failure,
-    Fault<F>: From<Fault<C::Failure>>,
+    F: Failure + From<C::Failure>,
 {
     type Good = G;
     type Failure = F;
@@ -43,7 +42,7 @@ where
         self.consumer
             .consume()
             .map(Self::Good::from)
-            .map_err(Self::Failure::map_from)?
+            .map_err(Self::Failure::from)?
     }
 }
 
@@ -69,9 +68,7 @@ impl<P, G, F> Converter<P, G, F> {
     }
 }
 
-impl<P: Producer, G: TryInto<P::Good>, F: Failure> Producer for Converter<P, G, F>
-where
-    Fault<F>: From<Fault<P::Failure>>,
+impl<P: Producer, G: TryInto<P::Good>, F: Failure + From<P::Failure>> Producer for Converter<P, G, F>
 {
     type Good = G;
     type Failure = F;
@@ -82,7 +79,7 @@ where
         if let Ok(converted_good) = good.try_into() {
             self.producer
                 .produce(converted_good)
-                .map_err(Self::Failure::map_from)?
+                .map_err(Self::Failure::from)?
         }
     }
 }

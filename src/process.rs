@@ -1,6 +1,7 @@
 //! Implements [`Producer`] and [`Consumer`] for the standard I/O streams of a process.
 use {
-    crate::{io, thread, ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
+    conventus::DisassembleInto,
+    crate::{io::{self, WriteFault}, ConsumeFailure, Consumer, ProduceFailure, Producer},
     core::{cell::RefCell, convert::TryFrom, fmt::Debug},
     fehler::{throw, throws},
     std::{
@@ -34,7 +35,7 @@ fn input<I>(child: &mut Child) -> io::Writer<I> {
             .stdin
             .take()
             .ok_or_else(|| UncapturedStdioError("stdin".to_string()))?,
-    )?
+    )
 }
 
 /// Returns a [`Reader`] of the stdout of `child`.
@@ -45,7 +46,7 @@ fn output<O>(child: &mut Child) -> io::Reader<O> {
             .stdout
             .take()
             .ok_or_else(|| UncapturedStdioError("stdout".to_string()))?,
-    )?
+    )
 }
 
 /// Returns a [`Reader`] of the stderr of `child`.
@@ -56,7 +57,7 @@ fn error<E>(child: &mut Child) -> io::Reader<E> {
             .stderr
             .take()
             .ok_or_else(|| UncapturedStdioError("stderr".to_string()))?,
-    )?
+    )
 }
 
 impl<I, O, E> Process<I, O, E> {
@@ -125,11 +126,10 @@ where
 
 impl<I, O, E> Producer for Process<I, O, E>
 where
-    I: conventus::DisassembleInto<u8> + Debug,
-    <I as conventus::DisassembleInto<u8>>::Error: 'static,
+    I: DisassembleInto<u8>,
 {
     type Good = I;
-    type Failure = ProduceFailure<io::WriteError<I>>;
+    type Failure = WriteFault<I>;
 
     #[inline]
     #[throws(Self::Failure)]
@@ -228,9 +228,6 @@ pub enum CreateProcessErrorKind {
     /// Stdio is not captured.
     #[error(transparent)]
     UncapturedStdio(#[from] UncapturedStdioError),
-    /// A market actor has already been taken.
-    #[error(transparent)]
-    TakenParticipant(#[from] TakenParticipant),
 }
 
 /// An error capturing a stdio.
@@ -244,12 +241,6 @@ pub enum WaitError {
     /// Error thrown by wait call.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    /// Error thrown while terminating a write thread.
-    #[error(transparent)]
-    Write(#[from] thread::Fault<io::WriteThreadError>),
-    /// Error thrown while terminating a read thread.
-    #[error(transparent)]
-    Read(#[from] thread::Fault<io::ReadThreadError>),
 }
 
 /// An error waiting for a `Process` to exit.

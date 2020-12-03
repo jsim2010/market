@@ -1,39 +1,19 @@
-//! Implements [`Producer`] and [`Consumer`] for a thread.
+//! Implements [`Consumer`] for a thread.
+//!
+//! A thread consists of code that is executed separately. When the code is completed, the status can be consumed.
 use {
-    crate::{channel, ConsumeFailure, ConsumeFault, Consumer, Producer},
-    core::fmt::{Debug, Display},
+    crate::{sync::{create_lock, Trigger, create_delivery, Deliverer, Accepter}, ConsumeFailure, Consumer, Producer},
+    core::convert::TryFrom,
     fehler::{throw, throws},
-    log::error,
-    std::{any::Any, error::Error, panic::UnwindSafe, thread::JoinHandle},
+    std::{thread::spawn, panic::{AssertUnwindSafe, catch_unwind, RefUnwindSafe}, any::Any},
 };
 
-/// The type returned by [`std::panic::catch_unwind()`] when a panic is caught.
+/// The type returned by [`catch_unwind()`] when a panic is caught.
 type Panic = Box<dyn Any + Send + 'static>;
-
-/// An error while consuming the outcome of a thread.
-#[derive(ConsumeFault, Debug, Eq, PartialEq)]
-pub enum Fault<E> {
-    /// The thread was killed.
-    Killed,
-    /// The thread threw an error.
-    Error(E),
-}
-
-impl<E: Display> Display for Fault<E> {
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            Self::Killed => write!(f, "thread was killed"),
-            Self::Error(ref error) => write!(f, "thread output error: {}", error),
-        }
-    }
-}
-
-impl<E: Debug + Display> Error for Fault<E> {}
 
 /// The type returned by a thread call which can represent a success of type `S`, an error of type `E`, or a panic.
 #[derive(Debug, parse_display::Display)]
-enum Outcome<S, E> {
+enum Status<S, E> {
     /// The thread call completed sucessfully.
     #[display("{0}")]
     Success(S),
@@ -45,79 +25,133 @@ enum Outcome<S, E> {
     Panic(Panic),
 }
 
-impl<S, E> From<Result<Result<S, E>, Panic>> for Outcome<S, E> {
-    #[inline]
-    fn from(result: Result<Result<S, E>, Panic>) -> Self {
-        match result {
-            Ok(Ok(success)) => Self::Success(success),
-            Ok(Err(error)) => Self::Error(error),
-            Err(panic) => Self::Panic(panic),
-        }
+impl<S, E> Status<S, E> {
+    /// If `self` represents a success.
+    const fn is_success(&self) -> bool {
+        matches!(*self, Self::Success(_))
     }
 }
 
-/// A wrapper around the `std::thread` functionality.
+/// Describes the kind of thread.
+#[derive(Clone, Copy, Debug)]
+pub enum Kind {
+    /// Runs the call a single time.
+    Single,
+    /// Will continue running call until cancelled.
+    Cancelable,
+}
+
+/// A wrapper around the [`std::thread`] functionality.
 ///
-/// Consumes the outcome of running the given closure. Thus, consumption replaces the functionality of `join`.
+/// Consumes the status of running the given closure. Thus, consumption replaces the functionality of [`std::thread::JoinHandle::join()`].
 #[derive(Debug)]
 pub struct Thread<S, E> {
-    /// Consumes the outcome of the thread.
-    consumer: channel::KindConsumer<channel::Crossbeam<Outcome<S, E>>>,
-    /// The handle to the thread.
-    handle: JoinHandle<()>,
+    /// Consumes the status of the call.
+    consumer: Accepter<Status<S, E>>,
+    /// [`Trigger`] to cancel a cancelable thread.
+    trigger: Option<Trigger>,
 }
 
-impl<S, E> Thread<S, E>
-where
-    S: Send + 'static,
-    E: Send + 'static,
+impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S, E>
 {
-    /// Creates a new `Thread` and spawns `call`.
+    /// Creates a new [`Thread`] and spawns `call`.
     #[inline]
-    pub fn new<F>(call: F) -> Self
-    where
-        F: FnOnce() -> Result<S, E> + Send + UnwindSafe + 'static,
-    {
-        let (tx, rx) = crossbeam_channel::bounded(1);
+    pub fn new<P: Send + 'static, F: FnMut(&mut P) -> Result<S, E> + RefUnwindSafe + Send + 'static>(
+        kind: Kind,
+        mut parameters: P,
+        mut call: F,
+    ) -> Self {
+        let (producer, consumer) = create_delivery::<Status<S, E>>();
 
-        Self {
-            handle: std::thread::spawn(move || {
-                // Although force is preferable to produce, force requires the outcome impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
-                if let Err(failure) =
-                    channel::KindProducer::<channel::Crossbeam<Outcome<S, E>>>::from(tx)
-                        .produce(Outcome::from(std::panic::catch_unwind(|| (call)())))
-                {
-                    error!(
-                        "Failed to send outcome of `{}` thread: {}",
-                        std::thread::current().name().unwrap_or("{unnamed}"),
-                        failure
-                    );
+        match kind {
+            Kind::Single => {
+                let _ = spawn(move || {
+                    Self::produce_outcome(Self::run(&mut parameters, &mut call), &producer);
+                });
+
+                Self {
+                    consumer,
+                    trigger: None,
                 }
-            }),
-            consumer: rx.into(),
+            }
+            Kind::Cancelable => {
+                let (trigger, hammer) = create_lock();
+                let _ = spawn(move || {
+                    let mut status = Self::run(&mut parameters, &mut call);
+
+                    while hammer.consume().is_err() && status.is_success() {
+                        status = Self::run(&mut parameters, &mut call);
+                    }
+
+                    Self::produce_outcome(status, &producer);
+                });
+
+                Self {
+                    consumer,
+                    trigger: Some(trigger),
+                }
+            }
         }
+    }
+
+    /// Runs `call` and catches any panics.
+    fn run<P, F: FnMut(&mut P) -> Result<S, E> + RefUnwindSafe + Send + 'static>(
+        mut parameters: &mut P,
+        call: &mut F,
+    ) -> Status<S, E> {
+        match catch_unwind(AssertUnwindSafe(||(call)(&mut parameters))) {
+            Ok(Ok(success)) => Status::Success(success),
+            Ok(Err(error)) => Status::Error(error),
+            Err(panic) => Status::Panic(panic),
+        }
+    }
+
+    /// Produces `status` via `producer`.
+    fn produce_outcome(
+        status: Status<S, E>,
+        producer: &Deliverer<Status<S, E>>,
+    ) {
+        // Although force is preferable to produce, force requires status impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
+        #[allow(clippy::unwrap_used)] // Passer::produce() can only fail when the stock is full. Since we only call this once, this should never happen. 
+        producer.produce(status).unwrap();
+    }
+
+    /// Requests that `self` be canceled.
+    #[inline]
+    pub fn cancel(&self) {
+        if let Some(trigger) = self.trigger.as_ref() {
+            #[allow(clippy::unwrap_used)] // Trigger::produce() cannot fail.
+            trigger.produce(()).unwrap();
+        }
+    }
+
+    /// Requests that `self` be canceled and blocks until termination is complete.
+    #[inline]
+    #[fehler::throws(E)]
+    pub fn terminate(&self) -> S {
+        self.cancel();
+        self.demand()?
     }
 }
 
-impl<S, E> Consumer for Thread<S, E> {
+impl<S, E: TryFrom<ConsumeFailure<E>>> Consumer for Thread<S, E> {
     type Good = S;
-    type Failure = ConsumeFailure<Fault<E>>;
+    type Failure = ConsumeFailure<E>;
 
-    #[throws(Self::Failure)]
+    #[allow(clippy::panic_in_result_fn)] // Propogate the panic that occurred in call provided by client.
     #[inline]
+    #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         match self.consumer.consume() {
-            Ok(output) => match output {
-                Outcome::Success(success) => success,
-                Outcome::Error(error) => throw!(Fault::Error(error)),
+            Ok(status) => match status {
+                Status::Success(success) => success,
+                Status::Error(error) => throw!(error),
                 #[allow(clippy::panic)]
                 // Propogate the panic that occurred in call provided by client.
-                Outcome::Panic(panic) => panic!(panic),
+                Status::Panic(panic) => panic!(panic),
             },
-            Err(failure) => match failure {
-                ConsumeFailure::EmptyStock => throw!(Self::Failure::EmptyStock),
-                ConsumeFailure::Fault(_) => throw!(Fault::Killed),
-            },
+            // Accepter::Failure is FaultlessFailure so a failure means the stock is empty.
+            Err(_) => throw!(ConsumeFailure::EmptyStock),
         }
     }
 }

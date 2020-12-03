@@ -1,166 +1,32 @@
-//! Implements [`Producer`] and [`Consumer`] for [`std::io::Write`] and [`std::io::Read`] trait objects.
+//! Implements [`Producer`] and [`Consumer`] for [`Write`] and [`Read`] trait objects.
+mod error;
+
+pub use error::{WriteFault, ReadFault};
+
 use {
+    conventus::{AssembleFrom, AssembleFailure, DisassembleInto},
     crate::{
-        channel, sync, thread, ConsumeFailure, ConsumeFault, Consumer, Failure, ProduceFailure,
-        ProduceFault, Producer, TakenParticipant,
+        queue::{create_supply_chain, Supplier, Procurer},
+        thread::{Thread, Kind}, ConsumeFailure, Consumer, Producer,
     },
     core::{
         cell::RefCell,
-        convert::TryFrom,
-        fmt::{Debug, Display},
+        fmt::Debug,
         marker::PhantomData,
     },
     fehler::{throw, throws},
-    log::error,
-    std::{
-        error::Error,
-        io::{Read, Write},
-        panic::UnwindSafe,
-    },
+    std::{panic::RefUnwindSafe, io::{Read, Write}},
 };
 
-/// An error thrown by the read thread.
-#[derive(Debug, thiserror::Error)]
-pub enum ReadThreadError {
-    /// Reader threw an error.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// [`Consumer`] to which the read thread is sending bytes was dropped.
-    #[error(transparent)]
-    Closed(#[from] channel::DisconnectedFault),
-}
-
-/// A fault thrown by [`ByteConsumer`].
-#[derive(ConsumeFault, Debug, thiserror::Error)]
-pub enum ReadBytesFault {
-    /// Read thread threw an error.
-    #[error(transparent)]
-    Thread(#[from] thread::Fault<ReadThreadError>),
-    /// [`Producer`] in read thread was dropped.
-    #[error(transparent)]
-    Channel(#[from] channel::DisconnectedFault),
-}
-
-impl From<thread::Fault<ReadThreadError>> for ConsumeFailure<ReadBytesFault> {
-    #[inline]
-    fn from(fault: thread::Fault<ReadThreadError>) -> Self {
-        Self::Fault(fault.into())
-    }
-}
-
-/// Consumes bytes using a [`std::io::Read`] trait object.
+/// Consumes goods of type `G` assembled from bytes read by a [`Read`] trait object.
 ///
-/// Bytes are read in a separate thread to ensure [`consume()`] is non-blocking.
-#[derive(Debug)]
-struct ByteConsumer {
-    /// Consumes bytes that have been read.
-    consumer: channel::CrossbeamConsumer<u8>,
-    /// The thread that reads bytes.
-    thread: thread::Thread<(), ReadThreadError>,
-    /// Triggers termination of the thread.
-    terminator: sync::Trigger,
-}
-
-impl ByteConsumer {
-    /// Creates a new [`ByteConsumer`].
-    #[inline]
-    #[throws(TakenParticipant)]
-    fn new<R: Read + Send + UnwindSafe + 'static>(mut reader: R) -> Self {
-        let mut channel = channel::Channel::<channel::Crossbeam<u8>>::new(channel::Size::Infinite);
-        let mut lock = sync::Lock::new();
-        let producer = channel.producer()?;
-        let hammer = lock.hammer()?;
-
-        Self {
-            consumer: channel.consumer()?,
-            thread: thread::Thread::new(move || {
-                let mut buffer = [0; 1024];
-
-                while hammer.consume().is_err() {
-                    let len = reader.read(&mut buffer)?;
-                    let (bytes, _) = buffer.split_at(len);
-
-                    producer.force_all(bytes.to_vec())?;
-                }
-
-                Ok(())
-            }),
-            terminator: lock.trigger()?,
-        }
-    }
-
-    /// Terminates the read thread.
-    #[allow(unused_must_use)] // Trigger::produce() cannot fail.
-    #[throws(thread::Fault<ReadThreadError>)]
-    fn terminate(&self) {
-        self.terminator.produce(());
-
-        self.thread.demand()
-    }
-}
-
-impl Consumer for ByteConsumer {
-    type Good = u8;
-    type Failure = ConsumeFailure<ReadBytesFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn consume(&self) -> Self::Good {
-        let consumption = self.consumer.consume();
-
-        if let Err(ConsumeFailure::Fault(_)) = consumption {
-            // If there is a fault in the consumption, it should be because the thread threw an error. A thread error provides more detailed information about the fault so throw that if possible.
-            if let Err(ConsumeFailure::Fault(thread_fault)) = self.thread.consume() {
-                throw!(thread_fault);
-            }
-        }
-
-        consumption.map_err(Self::Failure::map_from)?
-    }
-}
-
-/// A fault while reading a good of type `G`.
-#[derive(ConsumeFault, Debug)]
-pub enum ReadFault<G>
-where
-    G: conventus::AssembleFrom<u8>,
-{
-    /// [`ByteConsumer`] threw a fault.
-    Read(ReadBytesFault),
-    /// Unable to assemble the good from bytes.
-    Assemble(<G as conventus::AssembleFrom<u8>>::Error),
-}
-
-impl<G: Display> Display for ReadFault<G>
-where
-    G: conventus::AssembleFrom<u8>,
-{
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            Self::Read(ref fault) => write!(f, "{}", fault),
-            Self::Assemble(ref error) => write!(f, "{}", error),
-        }
-    }
-}
-
-impl<G: Debug + Display> Error for ReadFault<G> where G: conventus::AssembleFrom<u8> {}
-
-impl<G> From<ReadBytesFault> for ConsumeFailure<ReadFault<G>>
-where
-    G: conventus::AssembleFrom<u8>,
-{
-    #[inline]
-    fn from(fault: ReadBytesFault) -> Self {
-        Self::Fault(ReadFault::Read(fault))
-    }
-}
-
-/// Consumes goods of type `G` from bytes read by an `std::io::Read` trait object.
+/// Because [`Read::read()`] does not provide any guarantees about blocking, the read is executed in a separate thread which produces the read bytes. The current thread attempts to assemble the consumed bytes into a good.
 #[derive(Debug)]
 pub struct Reader<G> {
-    /// The consumer.
-    byte_consumer: ByteConsumer,
+    /// Consumes bytes from the thread.
+    byte_consumer: Procurer<u8>,
+    /// The thread which executes the reads.
+    thread: Thread<(), std::io::Error>,
     /// The current buffer of bytes.
     buffer: RefCell<Vec<u8>>,
     #[doc(hidden)]
@@ -168,32 +34,47 @@ pub struct Reader<G> {
 }
 
 impl<G> Reader<G> {
-    /// Creates a new `Reader` that composes goods from the bytes consumed by `reader`.
+    /// Creates a new [`Reader`] with `reader`.
     #[inline]
-    #[throws(TakenParticipant)]
-    pub fn new<R>(reader: R) -> Self
+    pub fn new<R>(mut reader: R) -> Self
     where
-        R: Read + Send + UnwindSafe + 'static,
+        R: Read + RefUnwindSafe + Send + 'static,
     {
+        let (byte_producer, byte_consumer) = create_supply_chain();
+        let buf = [0; 1024];
+
         Self {
-            byte_consumer: ByteConsumer::new(reader)?,
+            byte_consumer,
+            thread: Thread::new(Kind::Cancelable, buf, move |buf| {
+                let len = reader.read(buf)?;
+                let (bytes, _) = buf.split_at(len);
+
+                #[allow(clippy::unwrap_used)] // Supplier::force_all() returns Result<_, Infallible>.
+                byte_producer.force_all(bytes.to_vec()).unwrap();
+                Ok(())
+            }),
             buffer: RefCell::new(Vec::new()),
             phantom: PhantomData,
         }
     }
 
-    /// Terminates the read thread.
+    /// Requests that the thread be canceled.
     #[inline]
-    #[throws(thread::Fault<ReadThreadError>)]
+    pub fn cancel(&self) {
+        self.thread.cancel()
+    }
+
+    /// Terminates the thread.
+    #[inline]
+    #[throws(std::io::Error)]
     pub fn terminate(&self) {
-        self.byte_consumer.terminate()?
+        self.thread.terminate()?
     }
 }
 
 impl<G> Consumer for Reader<G>
 where
-    G: conventus::AssembleFrom<u8>,
-    ReadFault<G>: TryFrom<ConsumeFailure<ReadFault<G>>>,
+    G: AssembleFrom<u8>,
 {
     type Good = G;
     type Failure = ConsumeFailure<ReadFault<G>>;
@@ -201,170 +82,100 @@ where
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        let mut bytes = self.byte_consumer.consume_all()?;
-        let mut buffer = self.buffer.borrow_mut();
-        buffer.append(&mut bytes);
-        G::assemble_from(&mut buffer).map_err(|error| match error {
-            conventus::AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
-            conventus::AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadFault::Assemble(e)),
-        })?
-    }
-}
-
-/// An error thrown in the write thread.
-#[derive(Debug, thiserror::Error)]
-pub enum WriteThreadError {
-    /// The write was unsuccessful.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// The [`Producer`] sending bytes to the write thread was dropped.
-    #[error(transparent)]
-    Closed(#[from] channel::DisconnectedFault),
-}
-
-/// Produces bytes using a [`std::io::Write`] trait object.
-///
-/// Writing is done within a separate thread to ensure [`produce()`] is non-blocking.
-#[derive(Debug)]
-struct ByteProducer {
-    /// Produces bytes to be written by the writing thread.
-    producer: channel::KindProducer<channel::Crossbeam<u8>>,
-    /// Triggers the termination of the thread.
-    terminator: sync::Trigger,
-    /// The thread.
-    thread: thread::Thread<(), WriteThreadError>,
-}
-
-impl ByteProducer {
-    /// Creates a new [`ByteProducer`].
-    #[inline]
-    #[throws(TakenParticipant)]
-    fn new<W>(mut writer: W) -> Self
-    where
-        W: Write + Send + UnwindSafe + 'static,
-    {
-        let mut channel = channel::Channel::<channel::Crossbeam<u8>>::new(channel::Size::Infinite);
-        let mut lock = sync::Lock::new();
-        let hammer = lock.hammer()?;
-        let consumer = channel.consumer()?;
-
-        let thread = thread::Thread::new(move || {
-            while hammer.consume().is_err() {
-                writer.write_all(&consumer.consume_all()?)?;
+        match self.byte_consumer.consume_all() {
+            Ok(mut bytes) => {
+                let mut buffer = self.buffer.borrow_mut();
+                buffer.append(&mut bytes);
+                G::assemble_from(&mut buffer).map_err(|error| match error {
+                    AssembleFailure::Incomplete => ConsumeFailure::EmptyStock,
+                    AssembleFailure::Error(e) => ConsumeFailure::Fault(ReadFault::Assemble(e)),
+                })?
             }
-
-            Ok(())
-        });
-
-        Self {
-            producer: channel.producer()?,
-            terminator: lock.trigger()?,
-            thread,
+            Err(_) => {
+                // Procurer::Failure is FaultlessFailure so a failure thrown by consume_all() is caused by an empty stock. Check to see if the thread has terminated.
+                match self.thread.consume() {
+                    // Thread was terminated.
+                    Ok(()) => throw!(ReadFault::Terminated),
+                    Err(failure) => throw!( match failure {
+                        ConsumeFailure::EmptyStock => ConsumeFailure::EmptyStock,
+                        ConsumeFailure::Fault(fault) => ConsumeFailure::Fault(ReadFault::from(fault)),
+                    }),
+                }
+            }
         }
     }
-
-    /// Terminates the write thread.
-    #[allow(unused_must_use)] // Trigger::produce() cannot fail.
-    #[throws(thread::Fault<WriteThreadError>)]
-    fn terminate(&self) {
-        self.terminator.produce(());
-
-        self.thread.demand()
-    }
 }
 
-impl Producer for ByteProducer {
-    type Good = u8;
-    type Failure = ProduceFailure<channel::DisconnectedFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        self.producer.produce(good)?
-    }
-}
-
-/// Produces goods of type `G` by writing bytes via an item implementing `std::io::Write`.
+/// Writes bytes disassembled from goods of type `G` via a [`Write`] trait object.
+///
+/// Because [`Write::write()`] does not provide any guarantees about blocking, the write is executed in a separate thread. The current thread attempts to disassemble the good into bytes that are produced to the thread.
 #[derive(Debug)]
 pub struct Writer<G> {
-    /// The byte producer.
-    byte_producer: ByteProducer,
+    /// Produces bytes to the thread.
+    byte_producer: Supplier<u8>,
+    /// The thread which executes the writes.
+    thread: Thread<(), std::io::Error>,
     #[doc(hidden)]
     phantom: PhantomData<G>,
 }
 
 impl<G> Writer<G> {
-    /// Creates a new `Writer` that strips bytes from goods and writes them using `writer`.
+    /// Creates a new [`Writer`] with `writer`.
     #[inline]
-    #[throws(TakenParticipant)]
-    pub fn new<W>(writer: W) -> Self
+    pub fn new<W>(mut writer: W) -> Self
     where
-        W: Write + Send + UnwindSafe + 'static,
+        W: Write + RefUnwindSafe + Send + 'static,
     {
+        let (byte_producer, byte_consumer) = create_supply_chain();
+
         Self {
-            byte_producer: ByteProducer::new(writer)?,
+            byte_producer,
+            thread: Thread::new(Kind::Cancelable, (), move |_| {
+                #[allow(clippy::unwrap_used)] // Procurer::consume_all() returns Result<_, Infallible>.
+                writer.write_all(&byte_consumer.consume_all().unwrap())?;
+                Ok(())
+            }),
             phantom: PhantomData,
         }
     }
 
-    /// Terminates the writing thread.
+    /// Requests that the thread be canceled.
     #[inline]
-    #[throws(thread::Fault<WriteThreadError>)]
+    pub fn cancel(&self) {
+        self.thread.cancel();
+    }
+
+    /// Terminates the thread.
+    #[inline]
+    #[throws(std::io::Error)]
     pub fn terminate(&self) {
-        self.byte_producer.terminate()?
+        self.thread.terminate()?
     }
 }
 
-impl<G> Producer for Writer<G>
-where
-    G: conventus::DisassembleInto<u8>,
-    WriteError<G>: TryFrom<ProduceFailure<WriteError<G>>>,
+impl<G: DisassembleInto<u8>> Producer for Writer<G>
 {
     type Good = G;
-    type Failure = ProduceFailure<WriteError<G>>;
+    type Failure = WriteFault<G>;
 
+    #[allow(clippy::unwrap_in_result)] // Supplier::produce_all returns Result<_, Infallible>.
     #[inline]
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
-        self.byte_producer
-            .produce_all(good.disassemble_into().map_err(WriteError::Disassemble)?)
-            .map_err(ProduceFailure::map_into)?
-    }
-}
-
-/// An error while writing a good of type `G`.
-#[derive(ProduceFault, Debug)]
-pub enum WriteError<G>
-where
-    G: conventus::DisassembleInto<u8>,
-{
-    /// Unable to disassemble the good into bytes.
-    Disassemble(<G as conventus::DisassembleInto<u8>>::Error),
-    /// Writer was closed.
-    Closed,
-}
-
-impl<G: Display> Display for WriteError<G>
-where
-    G: conventus::DisassembleInto<u8>,
-{
-    #[inline]
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            Self::Disassemble(ref error) => write!(f, "{}", error),
-            Self::Closed => write!(f, "writer was closed"),
+        // Check to see if the thread was terminated.
+        match self.thread.consume() {
+            // Thread was terminated.
+            Ok(()) => throw!(WriteFault::Terminated),
+            Err(failure) => {
+                if let ConsumeFailure::Fault(error) = failure {
+                    throw!(WriteFault::Io(error));
+                } else {
+                    // Thread is still running.
+                    #[allow(clippy::unwrap_used)] // Supplier::produce_all returns Result<_, Infallible>.
+                    self.byte_producer
+                        .produce_all(good.disassemble_into().map_err(WriteFault::Disassemble)?).unwrap()
+                }
+            }
         }
-    }
-}
-
-impl<G: Debug + Display> Error for WriteError<G> where G: conventus::DisassembleInto<u8> {}
-
-impl<G> From<channel::DisconnectedFault> for WriteError<G>
-where
-    G: conventus::DisassembleInto<u8>,
-{
-    #[inline]
-    fn from(_: channel::DisconnectedFault) -> Self {
-        Self::Closed
     }
 }

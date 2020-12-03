@@ -13,8 +13,8 @@ edition = "2018"
 [dependencies]
 conventus = "0.2.0"
 crossbeam-channel = "0.5.0"
+crossbeam-queue = "0.3.1"
 fehler = "1.0.0"
-log = "0.4.0"
 market_derive = { path = "derive", version = "0.1.0" }
 parse-display = "0.1.1"
 thiserror = "1.0.0"

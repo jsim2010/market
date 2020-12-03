@@ -1,21 +1,37 @@
 //! Implements [`Producer`] and [`Consumer`] for various types of channels.
+//!
+//! A channel is the most generic implementation of a market. A channel manages the exchange of goods from one or more [`Producer`]s to one or more [`Consumer`]s.
 mod error;
 
-pub use error::DisconnectedFault;
+pub use error::{WithdrawnDemand, WithdrawnSupply};
 
 use {
-    crate::{ConsumeFailure, Consumer, Participant, ProduceFailure, Producer, TakenParticipant},
-    core::{fmt::Debug, marker::PhantomData},
+    crate::{Consumer, ConsumeFailure, Producer, ProduceFailure},
+    core::marker::PhantomData,
     fehler::throws,
+    std::sync::mpsc::{SyncSender, sync_channel, channel},
 };
 
-/// The [`Kind::Producer`] of `K`.
-pub type KindProducer<K> = <K as Kind>::Producer;
+/// Creates a channel of `S` [`Style`] with a max stock of `size`.
+#[inline]
+#[must_use]
+pub fn create<S: Style>(structure: Structure, size: Size) -> (S::Producer, S::Consumer) {
+    match structure {
+        Structure::BilateralMonopoly => match size {
+            Size::Infinite => S::infinite(),
+            Size::Finite(value) => S::finite(value),
+        }
+    }
+}
 
-/// The [`Kind::Consumer`] of `K`.
-pub type KindConsumer<K> = <K as Kind>::Consumer;
+/// Defines how many [`Producer`]s and [`Consumer`]s a channel has.
+#[derive(Clone, Copy, Debug)]
+pub enum Structure {
+    /// 1 producer and 1 consumer.
+    BilateralMonopoly,
+}
 
-/// The size of the stock for a channel.
+/// The size of the stock of a channel.
 #[derive(Clone, Copy, Debug)]
 pub enum Size {
     /// Infinite size.
@@ -24,11 +40,11 @@ pub enum Size {
     Finite(usize),
 }
 
-/// Describes a kind of channel.
-pub trait Kind {
-    /// The [`Producer`] created by this channel kind.
+/// Describes the style or implementation of a channel.
+pub trait Style {
+    /// The created [`Producer`] type.
     type Producer: Producer;
-    /// The [`Consumer`] created by this channel kind.
+    /// The created [`Consumer`] type.
     type Consumer: Consumer;
 
     /// Returns the producer and consumer of a channel with an infinite stack size.
@@ -37,170 +53,104 @@ pub trait Kind {
     fn finite(size: usize) -> (Self::Producer, Self::Consumer);
 }
 
-/// Manages a channel as defined by `K`.
-#[derive(Debug)]
-pub struct Channel<K: Kind> {
-    /// The producer of the channel.
-    producer: Option<K::Producer>,
-    /// The consumer of the channel.
-    consumer: Option<K::Consumer>,
-}
-
-impl<K: Kind> Channel<K> {
-    /// Creates a new channel with a stock size of `size`.
-    #[inline]
-    #[must_use]
-    pub fn new(size: Size) -> Self {
-        let (producer, consumer) = match size {
-            Size::Infinite => K::infinite(),
-            Size::Finite(value) => K::finite(value),
-        };
-
-        Self {
-            producer: Some(producer),
-            consumer: Some(consumer),
-        }
-    }
-
-    /// Takes the [`Producer`] from `self`.
-    #[inline]
-    #[throws(TakenParticipant)]
-    pub fn producer(&mut self) -> K::Producer {
-        self.producer
-            .take()
-            .ok_or(TakenParticipant(Participant::Producer))?
-    }
-
-    /// Takes the [`Consumer`] from `self`.
-    #[inline]
-    #[throws(TakenParticipant)]
-    pub fn consumer(&mut self) -> K::Consumer {
-        self.consumer
-            .take()
-            .ok_or(TakenParticipant(Participant::Consumer))?
-    }
-}
-
-/// Implements a crossbeam channel with a good of `G`.
+/// A channel as implemented by [`crossbeam_channel`] with a good of `G`.
 #[derive(Debug)]
 pub struct Crossbeam<G> {
-    /// The good that is stored on the channel.
+    /// The type of the good that is exchanged on the channel.
     good: PhantomData<G>,
 }
 
-impl<G> Kind for Crossbeam<G> {
-    type Producer = CrossbeamProducer<G>;
-    type Consumer = CrossbeamConsumer<G>;
+impl<G> Style for Crossbeam<G> {
+    type Producer = crossbeam_channel::Sender<G>;
+    type Consumer = crossbeam_channel::Receiver<G>;
 
     #[inline]
     fn infinite() -> (Self::Producer, Self::Consumer) {
-        let (sender, receiver) = crossbeam_channel::unbounded();
-        (sender.into(), receiver.into())
+        crossbeam_channel::unbounded()
     }
 
     #[inline]
     fn finite(size: usize) -> (Self::Producer, Self::Consumer) {
-        let (sender, receiver) = crossbeam_channel::bounded(size);
-        (sender.into(), receiver.into())
+        crossbeam_channel::bounded(size)
     }
 }
 
-/// A [`std::sync::mpsc::Receiver`] that implements [`Consumer<Good = G>`].
-#[derive(Debug)]
-pub struct StdConsumer<G> {
-    /// The receiver.
-    rx: std::sync::mpsc::Receiver<G>,
+impl<G> Producer for crossbeam_channel::Sender<G> {
+    type Good = G;
+    type Failure = ProduceFailure<WithdrawnDemand>;
+
+    #[inline]
+    #[throws(Self::Failure)]
+    fn produce(&self, good: Self::Good) {
+        self.try_send(good)?
+    }
 }
 
-impl<G> Consumer for StdConsumer<G> {
+impl<G> Consumer for crossbeam_channel::Receiver<G> {
     type Good = G;
-    type Failure = ConsumeFailure<DisconnectedFault>;
+    type Failure = ConsumeFailure<WithdrawnSupply>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        self.rx.try_recv()?
+        self.try_recv()?
     }
 }
 
-impl<G> From<std::sync::mpsc::Receiver<G>> for StdConsumer<G> {
-    #[inline]
-    fn from(rx: std::sync::mpsc::Receiver<G>) -> Self {
-        Self { rx }
-    }
-}
-
-/// A [`std::sync::mpsc::Sender`] that implements [`Producer`].
+/// A channel as implemented by [`std::sync::mpsc`] with a good of `G`.
 #[derive(Debug)]
-pub struct StdProducer<G> {
-    /// The sender.
-    tx: std::sync::mpsc::Sender<G>,
+pub struct Std<G> {
+    /// The type of good that is exchanged on the channel.
+    good: PhantomData<G>,
+}
+
+impl<G> Style for Std<G> {
+    type Producer = StdProducer<G>;
+    type Consumer = std::sync::mpsc::Receiver<G>;
+
+    #[inline]
+    fn infinite() -> (Self::Producer, Self::Consumer) {
+        let (sender, receiver) = channel();
+        (StdProducer::Async(sender), receiver)
+    }
+
+    #[inline]
+    fn finite(size: usize) -> (Self::Producer, Self::Consumer) {
+        let (sender, receiver) = sync_channel(size);
+        (StdProducer::Sync(sender), receiver)
+    }
+}
+
+/// One of the senders implemented by [`std::sync::mpsc`].
+#[derive(Debug)]
+pub enum StdProducer<G> {
+    /// The asynchronous sender.
+    Async(std::sync::mpsc::Sender<G>),
+    /// The synchronous sender.
+    Sync(SyncSender<G>),
 }
 
 impl<G> Producer for StdProducer<G> {
     type Good = G;
-    type Failure = ProduceFailure<DisconnectedFault>;
+    type Failure = ProduceFailure<WithdrawnDemand>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
-        self.tx.send(good)?
+        match *self {
+            Self::Async(ref sender) => sender.send(good)?,
+            Self::Sync(ref sender) => sender.try_send(good)?,
+        }
     }
 }
 
-impl<G> From<std::sync::mpsc::Sender<G>> for StdProducer<G> {
-    #[inline]
-    fn from(tx: std::sync::mpsc::Sender<G>) -> Self {
-        Self { tx }
-    }
-}
-
-/// A [`crossbeam_channel::Receiver`] that implements [`Consumer`].
-#[derive(Debug)]
-pub struct CrossbeamConsumer<G> {
-    /// The receiver.
-    rx: crossbeam_channel::Receiver<G>,
-}
-
-impl<G> Consumer for CrossbeamConsumer<G> {
+impl<G> Consumer for std::sync::mpsc::Receiver<G> {
     type Good = G;
-    type Failure = ConsumeFailure<DisconnectedFault>;
+    type Failure = ConsumeFailure<WithdrawnSupply>;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        self.rx.try_recv()?
-    }
-}
-
-impl<G> From<crossbeam_channel::Receiver<G>> for CrossbeamConsumer<G> {
-    #[inline]
-    fn from(rx: crossbeam_channel::Receiver<G>) -> Self {
-        Self { rx }
-    }
-}
-
-/// A [`crossbeam_channel::Sender`] that implements [`Producer`].
-#[derive(Debug)]
-pub struct CrossbeamProducer<G> {
-    /// The sender.
-    tx: crossbeam_channel::Sender<G>,
-}
-
-impl<G> Producer for CrossbeamProducer<G> {
-    type Good = G;
-    type Failure = ProduceFailure<DisconnectedFault>;
-
-    #[inline]
-    #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) {
-        self.tx.try_send(good)?
-    }
-}
-
-impl<G> From<crossbeam_channel::Sender<G>> for CrossbeamProducer<G> {
-    #[inline]
-    fn from(tx: crossbeam_channel::Sender<G>) -> Self {
-        Self { tx }
+        self.try_recv()?
     }
 }

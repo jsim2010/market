@@ -1,124 +1,105 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
-    crate::{channel, ConsumeFailure, Consumer, ProduceFailure, Producer, TakenParticipant},
-    core::sync::atomic::{AtomicBool, Ordering},
-    fehler::throws,
+    crate::{Consumer, FaultlessFailure, Producer},
+    core::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}},
+    fehler::{throw, throws},
+    crossbeam_queue::ArrayQueue,
+    std::sync::Arc,
 };
 
-/// The mechanism for activating an irreversible action.
+/// Creates the [`Trigger`] and [`Hammer`] of a lock.
 ///
-/// The name derives from the name for the method of exploding the charge of a firearm.
-#[derive(Debug)]
-pub struct Lock {
-    /// Provides communication between the [`Trigger`] and the [`Hammer`] of the lock.
-    channel: channel::Channel<channel::Crossbeam<()>>,
+/// A lock is a simple synchronization that exchanges a binary signal. Once the lock has been triggered, it stays triggered/active forever.
+///
+/// The names `lock`, `Trigger` and `Hammer` come from the ignition mechanism of a firearm.
+#[inline]
+#[must_use]
+pub fn create_lock() -> (Trigger, Hammer) {
+    let trigger_bool = Arc::new(AtomicBool::new(false));
+    let hammer_bool = Arc::clone(&trigger_bool);
+    (Trigger{is_activated: trigger_bool}, Hammer{is_activated: hammer_bool})
 }
 
-impl Lock {
-    /// Creates a new [`Lock`].
-    #[inline]
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Takes the [`Trigger`] from `self.
-    ///
-    /// If the trigger has already been taken, throws a [`TakenParticipant`].
-    #[inline]
-    #[throws(TakenParticipant)]
-    pub fn trigger(&mut self) -> Trigger {
-        self.channel.producer()?.into()
-    }
-
-    /// Takes the [`Hammer`] from `self`.
-    ///
-    /// If the hammer has already been taken, throws a [`TakenParticipant`].
-    #[inline]
-    #[throws(TakenParticipant)]
-    pub fn hammer(&mut self) -> Hammer {
-        self.channel.consumer()?.into()
-    }
-}
-
-impl Default for Lock {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            channel: channel::Channel::new(channel::Size::Finite(1)),
-        }
-    }
-}
-
-/// Sends a status that can be activated but not deactivated.
+/// Produces a binary signal that cannot be deactivated.
 #[derive(Debug)]
 pub struct Trigger {
-    /// If the trigger has ben activated.
-    is_activated: AtomicBool,
-    /// The [`Producer`].
-    producer: channel::KindProducer<channel::Crossbeam<()>>,
-}
-
-impl From<channel::KindProducer<channel::Crossbeam<()>>> for Trigger {
-    #[inline]
-    fn from(producer: channel::KindProducer<channel::Crossbeam<()>>) -> Self {
-        Self {
-            is_activated: false.into(),
-            producer,
-        }
-    }
+    /// If the trigger has been activated.
+    is_activated: Arc<AtomicBool>,
 }
 
 impl Producer for Trigger {
     type Good = ();
-    type Failure = ProduceFailure<channel::DisconnectedFault>;
+    type Failure = Infallible;
 
     #[inline]
     #[throws(Self::Failure)]
-    fn produce(&self, good: Self::Good) -> Self::Good {
-        if !self.is_activated.load(Ordering::Relaxed) {
-            self.is_activated.store(true, Ordering::Relaxed);
-            self.producer.produce(good)?;
-        }
+    fn produce(&self, _: Self::Good) {
+        self.is_activated.store(true, Ordering::Relaxed);
     }
 }
 
-/// The [`Consumer`] of a [`Lock`].
-///
-/// The name derives from the hammer of a firearm, whose movement is caused by pulling the trigger.
+/// Consumes a binary signal that cannot be deactivated.
 #[derive(Debug)]
 pub struct Hammer {
     /// If the hammer has been activated.
-    is_activated: AtomicBool,
-    /// The [`Consumer`].
-    consumer: channel::CrossbeamConsumer<()>,
+    is_activated: Arc<AtomicBool>,
 }
 
 impl Consumer for Hammer {
     type Good = ();
-    type Failure = ConsumeFailure<channel::DisconnectedFault>;
+    type Failure = FaultlessFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            let consumption = self.consumer.consume();
-
-            if consumption.is_ok() {
-                self.is_activated.store(true, Ordering::Relaxed);
-            }
-
-            consumption?
+            throw!(FaultlessFailure);
         }
     }
 }
 
-impl From<channel::CrossbeamConsumer<()>> for Hammer {
+/// Creates a [`Deliverer`] and [`Accepter`] for an exchange with a stock of 1.
+#[inline]
+#[must_use]
+pub fn create_delivery<G>() -> (Deliverer<G>, Accepter<G>) {
+    let passer_item = Arc::new(ArrayQueue::new(1));
+    let catcher_item = Arc::clone(&passer_item);
+    (Deliverer{item: passer_item}, Accepter{item: catcher_item})
+}
+
+/// Delivers an item.
+#[derive(Debug)]
+pub struct Deliverer<G> {
+    /// The item to be delivered.
+    item: Arc<ArrayQueue<G>>,
+}
+
+impl<G> Producer for Deliverer<G> {
+    type Good = G;
+    type Failure = FaultlessFailure;
+
     #[inline]
-    fn from(consumer: channel::CrossbeamConsumer<()>) -> Self {
-        Self {
-            is_activated: false.into(),
-            consumer,
-        }
+    #[throws(Self::Failure)]
+    fn produce(&self, good: Self::Good) {
+        #[allow(clippy::map_err_ignore)] // Error is ().
+        self.item.push(good).map_err(|_| FaultlessFailure)?;
+    }
+}
+
+/// Accepts an item.
+#[derive(Debug)]
+pub struct Accepter<G> {
+    /// The item to be accepted.
+    item: Arc<ArrayQueue<G>>,
+}
+
+impl<G> Consumer for Accepter<G> {
+    type Good = G;
+    type Failure = FaultlessFailure;
+
+    #[throws(Self::Failure)]
+    #[inline]
+    fn consume(&self) -> Self::Good {
+        self.item.pop().ok_or(FaultlessFailure)?
     }
 }
