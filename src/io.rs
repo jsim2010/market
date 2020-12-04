@@ -1,21 +1,21 @@
 //! Implements [`Producer`] and [`Consumer`] for [`Write`] and [`Read`] trait objects.
 mod error;
 
-pub use error::{WriteFault, ReadFault};
+pub use error::{ReadFault, WriteFault};
 
 use {
-    conventus::{AssembleFrom, AssembleFailure, DisassembleInto},
     crate::{
-        queue::{create_supply_chain, Supplier, Procurer},
-        thread::{Thread, Kind}, ConsumeFailure, Consumer, Producer,
+        queue::{create_supply_chain, Procurer, Supplier},
+        thread::{Kind, Thread},
+        ConsumeFailure, Consumer, Producer,
     },
-    core::{
-        cell::RefCell,
-        fmt::Debug,
-        marker::PhantomData,
-    },
+    conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
+    core::{cell::RefCell, fmt::Debug, marker::PhantomData},
     fehler::{throw, throws},
-    std::{panic::RefUnwindSafe, io::{Read, Write}},
+    std::{
+        io::{Read, Write},
+        panic::RefUnwindSafe,
+    },
 };
 
 /// Consumes goods of type `G` assembled from bytes read by a [`Read`] trait object.
@@ -49,7 +49,8 @@ impl<G> Reader<G> {
                 let len = reader.read(buf)?;
                 let (bytes, _) = buf.split_at(len);
 
-                #[allow(clippy::unwrap_used)] // Supplier::force_all() returns Result<_, Infallible>.
+                #[allow(clippy::unwrap_used)]
+                // Supplier::force_all() returns Result<_, Infallible>.
                 byte_producer.force_all(bytes.to_vec()).unwrap();
                 Ok(())
             }),
@@ -61,14 +62,7 @@ impl<G> Reader<G> {
     /// Requests that the thread be canceled.
     #[inline]
     pub fn cancel(&self) {
-        self.thread.cancel()
-    }
-
-    /// Terminates the thread.
-    #[inline]
-    #[throws(std::io::Error)]
-    pub fn terminate(&self) {
-        self.thread.terminate()?
+        self.thread.cancel();
     }
 }
 
@@ -96,9 +90,10 @@ where
                 match self.thread.consume() {
                     // Thread was terminated.
                     Ok(()) => throw!(ReadFault::Terminated),
-                    Err(failure) => throw!( match failure {
+                    Err(failure) => throw!(match failure {
                         ConsumeFailure::EmptyStock => ConsumeFailure::EmptyStock,
-                        ConsumeFailure::Fault(fault) => ConsumeFailure::Fault(ReadFault::from(fault)),
+                        ConsumeFailure::Fault(fault) =>
+                            ConsumeFailure::Fault(ReadFault::from(fault)),
                     }),
                 }
             }
@@ -131,7 +126,8 @@ impl<G> Writer<G> {
         Self {
             byte_producer,
             thread: Thread::new(Kind::Cancelable, (), move |_| {
-                #[allow(clippy::unwrap_used)] // Procurer::consume_all() returns Result<_, Infallible>.
+                #[allow(clippy::unwrap_used)]
+                // Procurer::consume_all() returns Result<_, Infallible>.
                 writer.write_all(&byte_consumer.consume_all().unwrap())?;
                 Ok(())
             }),
@@ -144,17 +140,9 @@ impl<G> Writer<G> {
     pub fn cancel(&self) {
         self.thread.cancel();
     }
-
-    /// Terminates the thread.
-    #[inline]
-    #[throws(std::io::Error)]
-    pub fn terminate(&self) {
-        self.thread.terminate()?
-    }
 }
 
-impl<G: DisassembleInto<u8>> Producer for Writer<G>
-{
+impl<G: DisassembleInto<u8>> Producer for Writer<G> {
     type Good = G;
     type Failure = WriteFault<G>;
 
@@ -171,9 +159,11 @@ impl<G: DisassembleInto<u8>> Producer for Writer<G>
                     throw!(WriteFault::Io(error));
                 } else {
                     // Thread is still running.
-                    #[allow(clippy::unwrap_used)] // Supplier::produce_all returns Result<_, Infallible>.
+                    #[allow(clippy::unwrap_used)]
+                    // Supplier::produce_all returns Result<_, Infallible>.
                     self.byte_producer
-                        .produce_all(good.disassemble_into().map_err(WriteFault::Disassemble)?).unwrap()
+                        .produce_all(good.disassemble_into().map_err(WriteFault::Disassemble)?)
+                        .unwrap()
                 }
             }
         }

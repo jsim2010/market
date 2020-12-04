@@ -3,7 +3,7 @@
 use crate::{Consumer, Producer};
 
 use {
-    crate::{ConsumeFault, ConsumeFailure, ProduceFailure, ProduceFault},
+    crate::{ConsumeFailure, ConsumeFault, ProduceFailure, ProduceFault},
     std::sync::mpsc::SendError,
 };
 

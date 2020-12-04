@@ -1,9 +1,12 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
     crate::{Consumer, FaultlessFailure, Producer},
-    core::{convert::Infallible, sync::atomic::{AtomicBool, Ordering}},
-    fehler::{throw, throws},
+    core::{
+        convert::Infallible,
+        sync::atomic::{AtomicBool, Ordering},
+    },
     crossbeam_queue::ArrayQueue,
+    fehler::{throw, throws},
     std::sync::Arc,
 };
 
@@ -17,7 +20,14 @@ use {
 pub fn create_lock() -> (Trigger, Hammer) {
     let trigger_bool = Arc::new(AtomicBool::new(false));
     let hammer_bool = Arc::clone(&trigger_bool);
-    (Trigger{is_activated: trigger_bool}, Hammer{is_activated: hammer_bool})
+    (
+        Trigger {
+            is_activated: trigger_bool,
+        },
+        Hammer {
+            is_activated: hammer_bool,
+        },
+    )
 }
 
 /// Produces a binary signal that cannot be deactivated.
@@ -64,7 +74,10 @@ impl Consumer for Hammer {
 pub fn create_delivery<G>() -> (Deliverer<G>, Accepter<G>) {
     let passer_item = Arc::new(ArrayQueue::new(1));
     let catcher_item = Arc::clone(&passer_item);
-    (Deliverer{item: passer_item}, Accepter{item: catcher_item})
+    (
+        Deliverer { item: passer_item },
+        Accepter { item: catcher_item },
+    )
 }
 
 /// Delivers an item.

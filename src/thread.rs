@@ -2,10 +2,17 @@
 //!
 //! A thread consists of code that is executed separately. When the code is completed, the status can be consumed.
 use {
-    crate::{sync::{create_lock, Trigger, create_delivery, Deliverer, Accepter}, ConsumeFailure, Consumer, Producer},
+    crate::{
+        sync::{create_delivery, create_lock, Accepter, Deliverer, Trigger},
+        ConsumeFailure, Consumer, Producer,
+    },
     core::convert::TryFrom,
     fehler::{throw, throws},
-    std::{thread::spawn, panic::{AssertUnwindSafe, catch_unwind, RefUnwindSafe}, any::Any},
+    std::{
+        any::Any,
+        panic::{catch_unwind, AssertUnwindSafe, RefUnwindSafe},
+        thread::spawn,
+    },
 };
 
 /// The type returned by [`catch_unwind()`] when a panic is caught.
@@ -52,11 +59,13 @@ pub struct Thread<S, E> {
     trigger: Option<Trigger>,
 }
 
-impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S, E>
-{
+impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S, E> {
     /// Creates a new [`Thread`] and spawns `call`.
     #[inline]
-    pub fn new<P: Send + 'static, F: FnMut(&mut P) -> Result<S, E> + RefUnwindSafe + Send + 'static>(
+    pub fn new<
+        P: Send + 'static,
+        F: FnMut(&mut P) -> Result<S, E> + RefUnwindSafe + Send + 'static,
+    >(
         kind: Kind,
         mut parameters: P,
         mut call: F,
@@ -99,7 +108,7 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
         mut parameters: &mut P,
         call: &mut F,
     ) -> Status<S, E> {
-        match catch_unwind(AssertUnwindSafe(||(call)(&mut parameters))) {
+        match catch_unwind(AssertUnwindSafe(|| (call)(&mut parameters))) {
             Ok(Ok(success)) => Status::Success(success),
             Ok(Err(error)) => Status::Error(error),
             Err(panic) => Status::Panic(panic),
@@ -107,12 +116,10 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
     }
 
     /// Produces `status` via `producer`.
-    fn produce_outcome(
-        status: Status<S, E>,
-        producer: &Deliverer<Status<S, E>>,
-    ) {
+    fn produce_outcome(status: Status<S, E>, producer: &Deliverer<Status<S, E>>) {
         // Although force is preferable to produce, force requires status impl Clone and the panic value is not bound to impl Clone. Using produce should be fine because produce should never be blocked since this market has a single producer storing a single good.
-        #[allow(clippy::unwrap_used)] // Passer::produce() can only fail when the stock is full. Since we only call this once, this should never happen. 
+        #[allow(clippy::unwrap_used)]
+        // Passer::produce() can only fail when the stock is full. Since we only call this once, this should never happen.
         producer.produce(status).unwrap();
     }
 
@@ -123,14 +130,6 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
             #[allow(clippy::unwrap_used)] // Trigger::produce() cannot fail.
             trigger.produce(()).unwrap();
         }
-    }
-
-    /// Requests that `self` be canceled and blocks until termination is complete.
-    #[inline]
-    #[fehler::throws(E)]
-    pub fn terminate(&self) -> S {
-        self.cancel();
-        self.demand()?
     }
 }
 

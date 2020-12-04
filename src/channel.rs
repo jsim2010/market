@@ -6,10 +6,10 @@ mod error;
 pub use error::{WithdrawnDemand, WithdrawnSupply};
 
 use {
-    crate::{Consumer, ConsumeFailure, Producer, ProduceFailure},
+    crate::{ConsumeFailure, Consumer, ProduceFailure, Producer},
     core::marker::PhantomData,
     fehler::throws,
-    std::sync::mpsc::{SyncSender, sync_channel, channel},
+    std::sync::mpsc::{channel, sync_channel, SyncSender},
 };
 
 /// Creates a channel of `S` [`Style`] with a max stock of `size`.
@@ -20,7 +20,7 @@ pub fn create<S: Style>(structure: Structure, size: Size) -> (S::Producer, S::Co
         Structure::BilateralMonopoly => match size {
             Size::Infinite => S::infinite(),
             Size::Finite(value) => S::finite(value),
-        }
+        },
     }
 }
 

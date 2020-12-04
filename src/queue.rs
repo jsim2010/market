@@ -2,7 +2,7 @@
 //!
 //! Queues function similarly to channels with the only difference being that queues share access to a single memory source so there is no ['Failure'] if the other participant is dropped.
 use {
-    crate::{Producer, Consumer, FaultlessFailure},
+    crate::{Consumer, FaultlessFailure, Producer},
     core::convert::Infallible,
     crossbeam_queue::SegQueue,
     fehler::throws,
@@ -15,13 +15,20 @@ use {
 pub fn create_supply_chain<G>() -> (Supplier<G>, Procurer<G>) {
     let supplier_stock = Arc::new(SegQueue::new());
     let procurer_stock = Arc::clone(&supplier_stock);
-    (Supplier{stock: supplier_stock}, Procurer{stock: procurer_stock})
+    (
+        Supplier {
+            stock: supplier_stock,
+        },
+        Procurer {
+            stock: procurer_stock,
+        },
+    )
 }
 
 /// Consumes goods of type `G` from a queue.
 #[derive(Debug)]
 pub struct Supplier<G> {
-    /// The stock from which [`Self`] consumes.
+    /// The stock from which [`Supplier`] consumes.
     stock: Arc<SegQueue<G>>,
 }
 
@@ -39,7 +46,7 @@ impl<G> Producer for Supplier<G> {
 /// Produces goods of type `G` to a queue.
 #[derive(Debug)]
 pub struct Procurer<G> {
-    /// The stock to which [`Self`] produces.
+    /// The stock to which [`Procurer`] produces.
     stock: Arc<SegQueue<G>>,
 }
 

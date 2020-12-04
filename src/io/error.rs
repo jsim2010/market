@@ -1,16 +1,18 @@
 //! Errors related to IO.
 use {
-    fehler::{throws, throw},
-    conventus::{DisassembleInto, AssembleFrom},
-    crate::{Failure, ConsumeFailure, ProduceFault, ConsumeFault},
-    core::{convert::TryFrom, fmt::{Debug, Display, Formatter}},
+    crate::{ConsumeFailure, ConsumeFault, Failure, ProduceFault},
+    conventus::{AssembleFrom, DisassembleInto},
+    core::{
+        convert::TryFrom,
+        fmt::{Debug, Display, Formatter},
+    },
+    fehler::{throw, throws},
 };
 
 // Cannot derive thiserror::Error as this would require G: Display.
 /// A fault while reading a good of type `G`.
 #[derive(ConsumeFault, Debug)]
-pub enum ReadFault<G: AssembleFrom<u8>>
-{
+pub enum ReadFault<G: AssembleFrom<u8>> {
     /// The read threw an error.
     Io(std::io::Error),
     /// The thread was terminated.
@@ -19,8 +21,7 @@ pub enum ReadFault<G: AssembleFrom<u8>>
     Assemble(<G as AssembleFrom<u8>>::Error),
 }
 
-impl<G: AssembleFrom<u8> + Display> Display for ReadFault<G>
-{
+impl<G: AssembleFrom<u8> + Display> Display for ReadFault<G> {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match *self {
@@ -43,8 +44,7 @@ impl<G: AssembleFrom<u8>> From<std::io::Error> for ReadFault<G> {
 // Cannot derive thiserror::Error as this would require G: Display.
 /// A fault while writing a good of type `G`.
 #[derive(ProduceFault, Debug)]
-pub enum WriteFault<G: DisassembleInto<u8>>
-{
+pub enum WriteFault<G: DisassembleInto<u8>> {
     /// The write threw an error.
     Io(std::io::Error),
     /// The thread was terminated.
@@ -53,8 +53,7 @@ pub enum WriteFault<G: DisassembleInto<u8>>
     Disassemble(<G as DisassembleInto<u8>>::Error),
 }
 
-impl<G: DisassembleInto<u8> + Display> Display for WriteFault<G>
-{
+impl<G: DisassembleInto<u8> + Display> Display for WriteFault<G> {
     #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match *self {

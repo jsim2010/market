@@ -22,6 +22,20 @@ impl Failure for Infallible {
     type Fault = Self;
 }
 
+impl TryFrom<ProduceFailure<Infallible>> for Infallible {
+    type Error = ();
+
+    #[inline]
+    #[throws(())]
+    fn try_from(failure: ProduceFailure<Self>) -> Self {
+        if let ProduceFailure::Fault(fault) = failure {
+            fault
+        } else {
+            throw!(());
+        }
+    }
+}
+
 /// The type of [`Failure::Fault`] defined by the [`Failure`] `F`.
 pub type Fault<F> = <F as Failure>::Fault;
 

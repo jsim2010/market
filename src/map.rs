@@ -68,7 +68,8 @@ impl<P, G, F> Converter<P, G, F> {
     }
 }
 
-impl<P: Producer, G: TryInto<P::Good>, F: Failure + From<P::Failure>> Producer for Converter<P, G, F>
+impl<P: Producer, G: TryInto<P::Good>, F: Failure + From<P::Failure>> Producer
+    for Converter<P, G, F>
 {
     type Good = G;
     type Failure = F;
