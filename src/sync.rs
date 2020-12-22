@@ -1,6 +1,6 @@
 //! Implements [`Producer`] and [`Consumer`] for synchronization items.
 use {
-    crate::{Consumer, FaultlessFailure, Producer},
+    crate::{Consumer, InsufficientStockFailure, Producer},
     core::{
         convert::Infallible,
         sync::atomic::{AtomicBool, Ordering},
@@ -57,13 +57,13 @@ pub struct Hammer {
 
 impl Consumer for Hammer {
     type Good = ();
-    type Failure = FaultlessFailure;
+    type Failure = InsufficientStockFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
         if !self.is_activated.load(Ordering::Relaxed) {
-            throw!(FaultlessFailure);
+            throw!(InsufficientStockFailure);
         }
     }
 }
@@ -89,13 +89,13 @@ pub struct Deliverer<G> {
 
 impl<G> Producer for Deliverer<G> {
     type Good = G;
-    type Failure = FaultlessFailure;
+    type Failure = InsufficientStockFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good) {
         #[allow(clippy::map_err_ignore)] // Error is ().
-        self.item.push(good).map_err(|_| FaultlessFailure)?;
+        self.item.push(good).map_err(|_| InsufficientStockFailure)?;
     }
 }
 
@@ -108,11 +108,11 @@ pub struct Accepter<G> {
 
 impl<G> Consumer for Accepter<G> {
     type Good = G;
-    type Failure = FaultlessFailure;
+    type Failure = InsufficientStockFailure;
 
     #[throws(Self::Failure)]
     #[inline]
     fn consume(&self) -> Self::Good {
-        self.item.pop().ok_or(FaultlessFailure)?
+        self.item.pop().ok_or(InsufficientStockFailure)?
     }
 }

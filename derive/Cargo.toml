@@ -6,6 +6,9 @@ description = "Derive macros for market"
 license = "MIT"
 repository = "https://github.com/jsim2010/market"
 edition = "2018"
+readme = "../README.md"
+keywords = ["market", "derive"]
+categories = ["rust-patterns"]
 
 [lib]
 proc-macro = true

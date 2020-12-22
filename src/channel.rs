@@ -12,6 +12,11 @@ use {
     std::sync::mpsc::{channel, sync_channel, SyncSender},
 };
 
+/// The [`Producer`] of a crossbeam channel.
+pub type CrossbeamProducer<G> = crossbeam_channel::Sender<G>;
+/// The [`Consumer`] of a crossbeam channel.
+pub type CrossbeamConsumer<G> = crossbeam_channel::Receiver<G>;
+
 /// Creates a channel of `S` [`Style`] with a max stock of `size`.
 #[inline]
 #[must_use]

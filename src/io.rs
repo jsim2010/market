@@ -66,10 +66,7 @@ impl<G> Reader<G> {
     }
 }
 
-impl<G> Consumer for Reader<G>
-where
-    G: AssembleFrom<u8>,
-{
+impl<G: AssembleFrom<u8>> Consumer for Reader<G> {
     type Good = G;
     type Failure = ConsumeFailure<ReadFault<G>>;
 

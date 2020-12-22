@@ -1,8 +1,6 @@
 //! Infrastructure for producers and consumers in a market.
 //!
-//! A market is a stock of goods that can have agents act upon it. An agent can be either a [`Producer`] that stores goods in the market or a [`Consumer`] that retrieves goods from the market. The important thing to note about agents is that they are not mutated when they perform actions.
-//!
-//! In the rust stdlib, the primary example of a market is implemented by [`std::sync::mpsc::channel()`]. [`std::sync::mpsc::Sender`] is the producer and [`std::sync::mpsc::Receiver`] is the consumer.
+//! A market is a stock of goods that can have agents act upon it. An agent can be either a [`Producer`] that stores goods into the market or a [`Consumer`] that retrieves goods from the market. The important thing to note about agents is that they are immutable during their respective actions.
 
 // Use of market in derive macros requires defining crate as market.
 extern crate self as market;
@@ -18,55 +16,39 @@ pub mod thread;
 pub mod vec;
 
 pub use {
-    error::{ConsumeFailure, Failure, Fault, FaultlessFailure, ProduceFailure},
+    error::{ConsumeFailure, Failure, InsufficientStockFailure, ProduceFailure},
     market_derive::{ConsumeFault, ProduceFault},
 };
 
 use {
-    core::{convert::TryFrom, fmt::Debug},
+    core::fmt::Debug,
     fehler::{throw, throws},
 };
 
-/// Stores goods in a market.
-///
-/// Actions that can be performed have the following name convention:
-///
-/// 1. An action shall have the following components: desire, quantity and good.
-/// 2. If an action has multiple non-empty components, they shall be split by an underscore `_`.
-///
-/// Desire
-/// 1. `produce`: The action shall not block the current process.
-/// 2. `force`: The action may block the current process if necessary.
-///
-/// Quantity
-/// 1. (empty): The action shall attempt a single good.
-/// 2. `all`: The action shall attempt multiple goods.
-///
-/// Good
-/// 1. (empty): The action shall produce the provided good.
-/// 2. `default`: The action shall produce the default of good.
+/// Specifies the storage of goods into a market.
 #[allow(clippy::missing_inline_in_public_items)] // current issue with fehler for produce(); see https://github.com/withoutboats/fehler/issues/39
 pub trait Producer {
     /// The item being produced.
     type Good;
-    /// The type of [`Failure`] that could occur during production.
+    /// Describes a failure to successfully complete production.
     type Failure: Failure;
 
     /// Stores `good` in the market without blocking.
     ///
-    /// To ensure all functionality of [`Self`] performs as specified, [`produce()`] must be implemented such that all of the following are true:
+    /// SHALL only run in the calling process and return without blocking.
     ///
-    /// 1. [`produce()`] only runs in the current process and returns without blocking.
-    /// 2. If possible, `self` stores `good` in the market.
-    /// 3. If [`produce()`] catches fault `T`, it shall throw [`Failure`] `F` such that `Fault::<Self::Failure>::try_from(F)` returns `Ok(T)`.
-    /// 4. If `self` cannot store `good` immediately, [`produce()`] shall throw an appropriate [`Failure`].
+    /// # Errors
+    ///
+    /// If fault `T` is caught, SHALL throw [`Self::Failure`] `F` such that `F.fault() == Some(T)`. If `self` cannot store `good` without blocking, SHALL throw an appropriate [`Self::Failure`].
     #[allow(redundant_semicolons, unused_variables)] // current issue with fehler; see https://github.com/withoutboats/fehler/issues/39
     #[throws(Self::Failure)]
     fn produce(&self, good: Self::Good);
 
     /// Stores each good in `goods` in the market without blocking.
     ///
-    /// If [`Producer::produce_all()`] catches [`Failure`] `F`, it shall attempt no further goods and throw `F`.
+    /// # Errors
+    ///
+    /// If [`Failure`] `F` is caught, SHALL attempt no further goods and throw `F`.
     #[throws(Self::Failure)]
     fn produce_all(&self, goods: Vec<Self::Good>) {
         for good in goods {
@@ -74,29 +56,19 @@ pub trait Producer {
         }
     }
 
-    /// Stores the default of the good of the market without blocking.
-    ///
-    /// If [`Producer::produce_default()`] catches [`Failure`] `F`, it shall throw `F`.
-    #[inline]
-    #[throws(Self::Failure)]
-    fn produce_default(&self)
-    where
-        Self::Good: Default,
-    {
-        self.produce(Self::Good::default())?
-    }
-
     /// Stores `good` in the market, blocking until space is available.
     ///
-    /// If [`Producer::force()`] catches fault `T`, it shall throw `T`
+    /// # Errors
+    ///
+    /// If fault `T` is caught, SHALL throw `T`
     #[inline]
-    #[throws(Fault<Self::Failure>)]
+    #[throws(<Self::Failure as Failure>::Fault)]
     fn force(&self, good: Self::Good)
     where
         Self::Good: Clone + Debug,
     {
         while let Err(failure) = self.produce(good.clone()) {
-            if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
+            if let Some(fault) = failure.fault() {
                 throw!(fault)
             }
         }
@@ -104,8 +76,10 @@ pub trait Producer {
 
     /// Stores every good in `goods`, blocking until space is available.
     ///
-    /// If [`Producer::force_all()`] catches fault `T`, it shall attempt no further goods and throw `T`.
-    #[throws(Fault<Self::Failure>)]
+    /// # Errors
+    ///
+    /// If fault `T` is caught, SHALL attempt no further goods and throw `T`.
+    #[throws(<Self::Failure as Failure>::Fault)]
     fn force_all(&self, goods: Vec<Self::Good>)
     where
         Self::Good: Clone + Debug,
@@ -122,25 +96,28 @@ pub trait Producer {
 pub trait Consumer {
     /// The item being consumed.
     type Good;
-    /// The type of [`Failure`] that could occur during consumption.
+    /// Describes a failure to successfully complete consumption.
     type Failure: Failure;
 
     /// Retrieves the next good from the market without blocking.
     ///
-    /// To ensure all functionality of [`Consumer`] performs as specified, [`Consumer::consume()`] must be implemented such that all of the following are true:
+    /// SHALL only run in the calling process and return the next good in the market without blocking.
     ///
-    /// 1. [`Consumer::consume()`] only runs in the current process and returns without blocking.
-    /// 2. If possible, `self` returns the next good in stock.
-    /// 3. If [`Consumer::consume()`] catches fault `T`, it shall throw [`Failure`] `F` such that `Fault::<Consumer::Failure>::try_from(F)` returns `Ok(T)`.
-    /// 4. If `self` cannot immediately return a good, [`Consumer::consume()`] shall throw an appropriate [`Failure`].
+    /// # Errors
+    ///
+    /// If fault `T` is caught, SHALL throw [`Self::Failure`] `F` such that `F.fault() == Some(T)`. If `self` cannot retrieve a good without blocking, SHALL throw an appropriate [`Self::Failure`].
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good;
 
     /// Retrieves all goods in the market without blocking.
     ///
-    /// If `self` cannot immediately consume any goods, [`Consumer::consume_all()`] shall return an empty [`Vec`]. If a fault is thrown after 1 or more goods have been consumed, the fault is ignored and [`Consumer::consume_all()`] returns the consumed goods.
+    /// If assembly fails, the cause of the failure SHALL be thrown and `parts` SHALL NOT be modified.
+    ///
+    /// # Errors
+    ///
+    /// If a fault `T` is caught prior to retrieving a good, SHALL throw `T`. If fault is caught after 1 or more goods have been retrieved, the fault is ignored and SHALL return the retrieved goods.
     #[inline]
-    #[throws(Fault<Self::Failure>)]
+    #[throws(<Self::Failure as Failure>::Fault)]
     fn consume_all(&self) -> Vec<Self::Good> {
         let mut goods = Vec::new();
 
@@ -150,7 +127,7 @@ pub trait Consumer {
                     goods.push(good);
                 }
                 Err(failure) => {
-                    if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
+                    if let Some(fault) = failure.fault() {
                         if goods.is_empty() {
                             throw!(fault)
                         }
@@ -163,8 +140,12 @@ pub trait Consumer {
     }
 
     /// Retrieves the next good from the market, blocking until one is available.
+    ///
+    /// # Errors
+    ///
+    /// If fault `T` is caught, SHALL throw `T`.
     #[inline]
-    #[throws(Fault<Self::Failure>)]
+    #[throws(<Self::Failure as Failure>::Fault)]
     fn demand(&self) -> Self::Good {
         loop {
             match self.consume() {
@@ -172,7 +153,7 @@ pub trait Consumer {
                     break good;
                 }
                 Err(failure) => {
-                    if let Ok(fault) = Fault::<Self::Failure>::try_from(failure) {
+                    if let Some(fault) = failure.fault() {
                         throw!(fault);
                     }
                 }

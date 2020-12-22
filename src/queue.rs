@@ -2,7 +2,7 @@
 //!
 //! Queues function similarly to channels with the only difference being that queues share access to a single memory source so there is no ['Failure'] if the other participant is dropped.
 use {
-    crate::{Consumer, FaultlessFailure, Producer},
+    crate::{Consumer, InsufficientStockFailure, Producer},
     core::convert::Infallible,
     crossbeam_queue::SegQueue,
     fehler::throws,
@@ -52,11 +52,11 @@ pub struct Procurer<G> {
 
 impl<G> Consumer for Procurer<G> {
     type Good = G;
-    type Failure = FaultlessFailure;
+    type Failure = InsufficientStockFailure;
 
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        self.stock.pop().ok_or(FaultlessFailure)?
+        self.stock.pop().ok_or(InsufficientStockFailure)?
     }
 }
