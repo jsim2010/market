@@ -50,9 +50,12 @@ pub trait Producer {
     ///
     /// If [`Failure`] `F` is caught, SHALL attempt no further goods and throw `F`.
     #[throws(Self::Failure)]
-    fn produce_all(&self, goods: Vec<Self::Good>) {
+    fn produce_all<I: IntoIterator<Item = Self::Good>>(&self, goods: I)
+    where
+        Self: Sized,
+    {
         for good in goods {
-            self.produce(good)?
+            self.produce(good)?;
         }
     }
 
@@ -65,7 +68,7 @@ pub trait Producer {
     #[throws(<Self::Failure as Failure>::Fault)]
     fn force(&self, good: Self::Good)
     where
-        Self::Good: Clone + Debug,
+        Self::Good: Clone,
     {
         while let Err(failure) = self.produce(good.clone()) {
             if let Some(fault) = failure.fault() {
@@ -80,9 +83,10 @@ pub trait Producer {
     ///
     /// If fault `T` is caught, SHALL attempt no further goods and throw `T`.
     #[throws(<Self::Failure as Failure>::Fault)]
-    fn force_all(&self, goods: Vec<Self::Good>)
+    fn force_all<I: IntoIterator<Item = Self::Good>>(&self, goods: I)
     where
-        Self::Good: Clone + Debug,
+        Self: Sized,
+        Self::Good: Clone,
     {
         for good in goods {
             self.force(good)?
@@ -109,13 +113,13 @@ pub trait Consumer {
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good;
 
-    /// Returns a [`Repeat`] of `self`.
+    /// Returns a [`Goods`] of `self`.
     #[inline]
-    fn repeat(&self) -> Repeat<'_, Self>
+    fn goods(&self) -> Goods<'_, Self>
     where
         Self: Sized,
     {
-        Repeat {
+        Goods {
             consumer: self,
         }
     }
@@ -145,12 +149,12 @@ pub trait Consumer {
 
 /// An [`Iterator`] of the consumptions of a [`Consumer`]. 
 #[derive(Debug)]
-pub struct Repeat<'a, C: Consumer> {
+pub struct Goods<'a, C: Consumer> {
     /// The [`Consumer`].
     consumer: &'a C,
 }
 
-impl<C: Consumer> Iterator for Repeat<'_, C> {
+impl<C: Consumer> Iterator for Goods<'_, C> {
     type Item = Result<<C as Consumer>::Good, <<C as Consumer>::Failure as Failure>::Fault>;
 
     #[inline]
