@@ -109,33 +109,14 @@ pub trait Consumer {
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good;
 
-    /// Retrieves all goods in the market without blocking.
-    ///
-    /// If assembly fails, the cause of the failure SHALL be thrown and `parts` SHALL NOT be modified.
-    ///
-    /// # Errors
-    ///
-    /// If a fault `T` is caught prior to retrieving a good, SHALL throw `T`. If fault is caught after 1 or more goods have been retrieved, the fault is ignored and SHALL return the retrieved goods.
+    /// Returns a [`Repeat`] of `self`.
     #[inline]
-    #[throws(<Self::Failure as Failure>::Fault)]
-    fn consume_all(&self) -> Vec<Self::Good> {
-        let mut goods = Vec::new();
-
-        loop {
-            match self.consume() {
-                Ok(good) => {
-                    goods.push(good);
-                }
-                Err(failure) => {
-                    if let Some(fault) = failure.fault() {
-                        if goods.is_empty() {
-                            throw!(fault)
-                        }
-                    }
-
-                    break goods;
-                }
-            }
+    fn repeat(&self) -> Repeat<'_, Self>
+    where
+        Self: Sized,
+    {
+        Repeat {
+            consumer: self,
         }
     }
 
@@ -158,6 +139,25 @@ pub trait Consumer {
                     }
                 }
             }
+        }
+    }
+}
+
+/// An [`Iterator`] of the consumptions of a [`Consumer`]. 
+#[derive(Debug)]
+pub struct Repeat<'a, C: Consumer> {
+    /// The [`Consumer`].
+    consumer: &'a C,
+}
+
+impl<C: Consumer> Iterator for Repeat<'_, C> {
+    type Item = Result<<C as Consumer>::Good, <<C as Consumer>::Failure as Failure>::Fault>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.consumer.consume() {
+            Ok(good) => Some(Ok(good)),
+            Err(failure) => failure.fault().map(Err),
         }
     }
 }

@@ -73,7 +73,7 @@ impl<G: AssembleFrom<u8>> Consumer for Reader<G> {
     #[inline]
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good {
-        match self.byte_consumer.consume_all() {
+        match self.byte_consumer.repeat().collect() {
             Ok(mut bytes) => {
                 let mut buffer = self.buffer.borrow_mut();
                 buffer.append(&mut bytes);
@@ -125,7 +125,7 @@ impl<G> Writer<G> {
             thread: Thread::new(Kind::Cancelable, (), move |_| {
                 #[allow(clippy::unwrap_used)]
                 // Procurer::consume_all() returns Result<_, Infallible>.
-                writer.write_all(&byte_consumer.consume_all().unwrap())?;
+                writer.write_all(&byte_consumer.repeat().collect::<Result<Vec<u8>, _>>().unwrap())?;
                 Ok(())
             }),
             phantom: PhantomData,
