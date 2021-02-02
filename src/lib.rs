@@ -119,9 +119,7 @@ pub trait Consumer {
     where
         Self: Sized,
     {
-        Goods {
-            consumer: self,
-        }
+        Goods { consumer: self }
     }
 
     /// Retrieves the next good from the market, blocking until one is available.
@@ -147,7 +145,7 @@ pub trait Consumer {
     }
 }
 
-/// An [`Iterator`] of the consumptions of a [`Consumer`]. 
+/// An [`Iterator`] of the consumptions of a [`Consumer`].
 #[derive(Debug)]
 pub struct Goods<'a, C: Consumer> {
     /// The [`Consumer`].

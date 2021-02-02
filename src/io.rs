@@ -126,7 +126,12 @@ impl<G> Writer<G> {
             thread: Thread::new(Kind::Cancelable, (), move |_| {
                 #[allow(clippy::unwrap_used)]
                 // Procurer::consume_all() returns Result<_, Infallible>.
-                writer.write_all(&byte_consumer.goods().collect::<Result<Vec<u8>, _>>().unwrap())?;
+                writer.write_all(
+                    &byte_consumer
+                        .goods()
+                        .collect::<Result<Vec<u8>, _>>()
+                        .unwrap(),
+                )?;
                 Ok(())
             }),
             phantom: PhantomData,
