@@ -1,6 +1,6 @@
 //! Describes errors that market agents may throw during their respective actions.
 //!
-//! All errors that market agents may throw to indicate an action failed are [`Failure`]s. A subset of [`Failure`]s are faults, which indicate the market is currently in a state where no attempted action will be successful until the state is changed (if possible).
+//! All errors that market agents may throw to indicate an action failed are [`Failure`]s. A subset of [`Failure`]s are caused by an insufficient stock; the stock does not have enough space for the good from a [`Producer`] or the stock is empty and unable to provide a good to a [`Consumer`]. All other [`Failure`]s are faults.
 use {
     core::{
         convert::{Infallible, TryFrom},

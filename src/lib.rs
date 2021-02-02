@@ -50,9 +50,12 @@ pub trait Producer {
     ///
     /// If [`Failure`] `F` is caught, SHALL attempt no further goods and throw `F`.
     #[throws(Self::Failure)]
-    fn produce_all(&self, goods: Vec<Self::Good>) {
+    fn produce_all<I: IntoIterator<Item = Self::Good>>(&self, goods: I)
+    where
+        Self: Sized,
+    {
         for good in goods {
-            self.produce(good)?
+            self.produce(good)?;
         }
     }
 
@@ -65,7 +68,7 @@ pub trait Producer {
     #[throws(<Self::Failure as Failure>::Fault)]
     fn force(&self, good: Self::Good)
     where
-        Self::Good: Clone + Debug,
+        Self::Good: Clone,
     {
         while let Err(failure) = self.produce(good.clone()) {
             if let Some(fault) = failure.fault() {
@@ -80,9 +83,10 @@ pub trait Producer {
     ///
     /// If fault `T` is caught, SHALL attempt no further goods and throw `T`.
     #[throws(<Self::Failure as Failure>::Fault)]
-    fn force_all(&self, goods: Vec<Self::Good>)
+    fn force_all<I: IntoIterator<Item = Self::Good>>(&self, goods: I)
     where
-        Self::Good: Clone + Debug,
+        Self: Sized,
+        Self::Good: Clone,
     {
         for good in goods {
             self.force(good)?
@@ -109,34 +113,13 @@ pub trait Consumer {
     #[throws(Self::Failure)]
     fn consume(&self) -> Self::Good;
 
-    /// Retrieves all goods in the market without blocking.
-    ///
-    /// If assembly fails, the cause of the failure SHALL be thrown and `parts` SHALL NOT be modified.
-    ///
-    /// # Errors
-    ///
-    /// If a fault `T` is caught prior to retrieving a good, SHALL throw `T`. If fault is caught after 1 or more goods have been retrieved, the fault is ignored and SHALL return the retrieved goods.
+    /// Returns a [`Goods`] of `self`.
     #[inline]
-    #[throws(<Self::Failure as Failure>::Fault)]
-    fn consume_all(&self) -> Vec<Self::Good> {
-        let mut goods = Vec::new();
-
-        loop {
-            match self.consume() {
-                Ok(good) => {
-                    goods.push(good);
-                }
-                Err(failure) => {
-                    if let Some(fault) = failure.fault() {
-                        if goods.is_empty() {
-                            throw!(fault)
-                        }
-                    }
-
-                    break goods;
-                }
-            }
-        }
+    fn goods(&self) -> Goods<'_, Self>
+    where
+        Self: Sized,
+    {
+        Goods { consumer: self }
     }
 
     /// Retrieves the next good from the market, blocking until one is available.
@@ -158,6 +141,25 @@ pub trait Consumer {
                     }
                 }
             }
+        }
+    }
+}
+
+/// An [`Iterator`] of the consumptions of a [`Consumer`].
+#[derive(Debug)]
+pub struct Goods<'a, C: Consumer> {
+    /// The [`Consumer`].
+    consumer: &'a C,
+}
+
+impl<C: Consumer> Iterator for Goods<'_, C> {
+    type Item = Result<<C as Consumer>::Good, <<C as Consumer>::Failure as Failure>::Fault>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.consumer.consume() {
+            Ok(good) => Some(Ok(good)),
+            Err(failure) => failure.fault().map(Err),
         }
     }
 }
