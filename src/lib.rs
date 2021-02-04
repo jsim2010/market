@@ -6,6 +6,7 @@
 extern crate self as market;
 
 pub mod channel;
+pub(crate) mod convert;
 mod error;
 pub mod io;
 mod map;
