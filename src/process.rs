@@ -7,6 +7,7 @@ use {
         io::{Reader, Writer},
         ConsumeFailure, ConsumeFault, Consumer,
     },
+    conventus::{AssembleFrom, DisassembleInto},
     core::{cell::RefCell, fmt::Debug},
     fehler::throws,
     std::process::{Child, Command, ExitStatus, Stdio},
@@ -18,7 +19,7 @@ use {
 /// stdout is read by consuming from the process.
 /// stderr is read by consuming from `Process::stderr()`.
 #[derive(Debug)]
-pub struct Process<I, O, E> {
+pub struct Process<I: DisassembleInto<u8>, O: AssembleFrom<u8>, E: AssembleFrom<u8>> {
     // Used for providing information to errors.
     /// A printable representation of the command executed by the process.
     command_str: String,
@@ -33,7 +34,7 @@ pub struct Process<I, O, E> {
     error: Reader<E>,
 }
 
-impl<I, O, E> Process<I, O, E> {
+impl<I: DisassembleInto<u8>, O: AssembleFrom<u8>, E: AssembleFrom<u8>> Process<I, O, E> {
     /// Creates a new `Process` that exectues `command`.
     #[allow(clippy::unwrap_in_result)] // Guaranteed that Results are Ok.
     #[inline]
@@ -62,24 +63,26 @@ impl<I, O, E> Process<I, O, E> {
 
     /// Returns the [`Writer`] of the stdin pipe.
     #[inline]
-    pub const fn input(&self) -> &Writer<I> {
+    pub fn input(&self) -> &Writer<I> {
         &self.input
     }
 
     /// Returns the [`Reader`] of the stdout pipe.
     #[inline]
-    pub const fn output(&self) -> &Reader<O> {
+    pub fn output(&self) -> &Reader<O> {
         &self.output
     }
 
     /// Returns the [`Reader`} of the stderr pipe.
     #[inline]
-    pub const fn error(&self) -> &Reader<E> {
+    pub fn error(&self) -> &Reader<E> {
         &self.error
     }
 }
 
-impl<I, O, E> Consumer for Process<I, O, E> {
+impl<I: DisassembleInto<u8>, O: AssembleFrom<u8>, E: AssembleFrom<u8>> Consumer
+    for Process<I, O, E>
+{
     type Good = ExitStatus;
     type Failure = ConsumeFailure<WaitFault>;
 
