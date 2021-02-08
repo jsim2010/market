@@ -32,7 +32,7 @@ pub struct Reader<G: AssembleFrom<u8>> {
 impl<G: AssembleFrom<u8>> Reader<G> {
     /// Creates a new [`Reader`] with `reader`.
     #[inline]
-    pub fn new<R>(mut reader: R) -> Self
+    pub fn new<R>(description: String, mut reader: R) -> Self
     where
         R: Read + RefUnwindSafe + Send + 'static,
     {
@@ -41,7 +41,7 @@ impl<G: AssembleFrom<u8>> Reader<G> {
 
         Self {
             assembler,
-            thread: Thread::new(Kind::Cancelable, buf, move |buf| {
+            thread: Thread::new(description, Kind::Cancelable, buf, move |buf| {
                 let len = reader.read(buf)?;
                 let (bytes, _) = buf.split_at(len);
 
@@ -95,7 +95,7 @@ pub struct Writer<G: DisassembleInto<u8>> {
 impl<G: DisassembleInto<u8>> Writer<G> {
     /// Creates a new [`Writer`] with `writer`.
     #[inline]
-    pub fn new<W>(mut writer: W) -> Self
+    pub fn new<W>(description: String, mut writer: W) -> Self
     where
         W: Write + RefUnwindSafe + Send + 'static,
     {
@@ -103,7 +103,7 @@ impl<G: DisassembleInto<u8>> Writer<G> {
 
         Self {
             disassembler,
-            thread: Thread::new(Kind::Cancelable, (), move |_| {
+            thread: Thread::new(description, Kind::Cancelable, (), move |_| {
                 #[allow(clippy::unwrap_used)]
                 // Consumer::goods() returns Result<_, Infallible>.
                 writer.write_all(

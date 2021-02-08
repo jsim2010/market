@@ -57,6 +57,8 @@ pub struct Thread<S, E> {
     consumer: Accepter<Status<S, E>>,
     /// [`Trigger`] to cancel a cancelable thread.
     trigger: Option<Trigger>,
+    /// Name of the thread.
+    name: String,
 }
 
 impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S, E> {
@@ -66,6 +68,7 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
         P: Send + 'static,
         F: FnMut(&mut P) -> Result<S, E> + RefUnwindSafe + Send + 'static,
     >(
+        name: String,
         kind: Kind,
         mut parameters: P,
         mut call: F,
@@ -79,6 +82,7 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
                 });
 
                 Self {
+                    name,
                     consumer,
                     trigger: None,
                 }
@@ -96,6 +100,7 @@ impl<S: Send + 'static, E: TryFrom<ConsumeFailure<E>> + Send + 'static> Thread<S
                 });
 
                 Self {
+                    name,
                     consumer,
                     trigger: Some(trigger),
                 }
@@ -145,9 +150,14 @@ impl<S, E: TryFrom<ConsumeFailure<E>>> Consumer for Thread<S, E> {
             Ok(status) => match status {
                 Status::Success(success) => success,
                 Status::Error(error) => throw!(error),
-                #[allow(clippy::panic)]
-                // Propogate the panic that occurred in call provided by client.
-                Status::Panic(panic) => panic!(panic),
+                Status::Panic(panic) => {
+                    log::error!("Panic was caught in thread `{}`", self.name);
+                    #[allow(clippy::panic)]
+                    {
+                        // Propogate the panic that occurred in call provided by client.
+                        panic!(panic);
+                    }
+                }
             },
             // Accepter::Failure is FaultlessFailure so a failure means the stock is empty.
             Err(_) => throw!(ConsumeFailure::EmptyStock),

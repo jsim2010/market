@@ -1,6 +1,6 @@
-//! Infrastructure for producers and consumers in a market.
+//! Provides infrastructure for producers and consumers in a market.
 //!
-//! A market is a stock of goods that can have agents act upon it. An agent can be either a [`Producer`] that stores goods into the market or a [`Consumer`] that retrieves goods from the market. The important thing to note about agents is that they are immutable during their respective actions.
+//! A market is a stock of goods that can have agents act upon it. An agent can be either a [`Producer`] that stores goods into the market or a [`Consumer`] that retrieves goods from the market. While agents are acting on the market, they SHALL be immutable.
 
 // Use of market in derive macros requires defining crate as market.
 extern crate self as market;

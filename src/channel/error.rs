@@ -1,65 +1,54 @@
-//! The errors related to channels.
+//! Implements the errors related to channels.
 #[cfg(doc)]
-use crate::{Consumer, Producer};
-
 use {
-    crate::{ConsumeFailure, ConsumeFault, ProduceFailure, ProduceFault},
-    std::sync::mpsc::SendError,
+    crate::{Consumer, Producer},
+    std::{convert::TryFrom, error::Error, fmt::Display},
 };
 
+use crate::{ConsumeFault, ProduceFault};
+
 /// A fault thrown when attempting to produce to a channel with no [`Consumer`]s.
-#[derive(Clone, ProduceFault, Copy, Debug, thiserror::Error)]
-#[error("demand is gone")]
-pub struct WithdrawnDemand;
+///
+/// Implements [`Error`]:
+///     - [`Error::source()`] returns [`None`].
+///     - [`Display::fmt()`] writes "demand of `{description}` has withdrawn".
+/// Implements [`TryFrom<ProduceFailure<Self>>`]:
+///     - [`TryFrom::try_from()`] SHALL follow specifications given at [`ProduceFault`].
+#[derive(Clone, Debug, ProduceFault, thiserror::Error)]
+#[error("demand of `{description}` has withdrawn")]
+pub struct WithdrawnDemandFault {
+    /// Describes the channel on which fault occurred.
+    description: String,
+}
+
+impl WithdrawnDemandFault {
+    /// Creates a new [`WithdrawnDemandFault`].
+    #[inline]
+    #[must_use]
+    pub const fn new(description: String) -> Self {
+        Self { description }
+    }
+}
 
 /// A fault thrown when attempting to consume from a channel with an empty stock and no [`Producer`]s.
-#[derive(Clone, ConsumeFault, Copy, Debug, thiserror::Error)]
-#[error("supply is gone")]
-pub struct WithdrawnSupply;
-
-impl From<std::sync::mpsc::TryRecvError> for ConsumeFailure<WithdrawnSupply> {
-    #[inline]
-    fn from(error: std::sync::mpsc::TryRecvError) -> Self {
-        match error {
-            std::sync::mpsc::TryRecvError::Empty => Self::EmptyStock,
-            std::sync::mpsc::TryRecvError::Disconnected => Self::Fault(WithdrawnSupply),
-        }
-    }
+///
+/// Implements [`Error`]:
+///     - [`Error::source()`] returns [`None`].
+///     - [`Display::fmt()`] writes "supply of `{description}` has withdrawn".
+/// Implements [`TryFrom<ConsumeFailure<Self>>`]:
+///     - [`TryFrom::try_from()`] SHALL follow specifications given at [`ConsumeFault`].
+#[derive(Clone, ConsumeFault, Debug, thiserror::Error)]
+#[error("supply of `{description}` has withdrawn")]
+pub struct WithdrawnSupplyFault {
+    /// Describes the channel on which fault occurred.
+    description: String,
 }
 
-impl<G> From<SendError<G>> for ProduceFailure<WithdrawnDemand> {
+impl WithdrawnSupplyFault {
+    /// Creates a new [`WithdrawnSupplyFault`].
     #[inline]
-    fn from(_: SendError<G>) -> Self {
-        Self::Fault(WithdrawnDemand)
-    }
-}
-
-impl<G> From<std::sync::mpsc::TrySendError<G>> for ProduceFailure<WithdrawnDemand> {
-    #[inline]
-    fn from(error: std::sync::mpsc::TrySendError<G>) -> Self {
-        match error {
-            std::sync::mpsc::TrySendError::Full(_) => Self::FullStock,
-            std::sync::mpsc::TrySendError::Disconnected(_) => Self::Fault(WithdrawnDemand),
-        }
-    }
-}
-
-impl From<crossbeam_channel::TryRecvError> for ConsumeFailure<WithdrawnSupply> {
-    #[inline]
-    fn from(error: crossbeam_channel::TryRecvError) -> Self {
-        match error {
-            crossbeam_channel::TryRecvError::Empty => Self::EmptyStock,
-            crossbeam_channel::TryRecvError::Disconnected => Self::Fault(WithdrawnSupply),
-        }
-    }
-}
-
-impl<G> From<crossbeam_channel::TrySendError<G>> for ProduceFailure<WithdrawnDemand> {
-    #[inline]
-    fn from(error: crossbeam_channel::TrySendError<G>) -> Self {
-        match error {
-            crossbeam_channel::TrySendError::Full(_) => Self::FullStock,
-            crossbeam_channel::TrySendError::Disconnected(_) => Self::Fault(WithdrawnDemand),
-        }
+    #[must_use]
+    pub const fn new(description: String) -> Self {
+        Self { description }
     }
 }

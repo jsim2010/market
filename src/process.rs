@@ -53,11 +53,11 @@ impl<I: DisassembleInto<u8>, O: AssembleFrom<u8>, E: AssembleFrom<u8>> Process<I
 
         #[allow(clippy::unwrap_used)] // Guaranteed that these values exist and have not been taken.
         Self {
-            command_str,
-            input: Writer::new(child.stdin.take().unwrap()),
-            output: Reader::new(child.stdout.take().unwrap()),
-            error: Reader::new(child.stderr.take().unwrap()),
+            input: Writer::new(format!("{} IN", command_str), child.stdin.take().unwrap()),
+            output: Reader::new(format!("{} OUT", command_str), child.stdout.take().unwrap()),
+            error: Reader::new(format!("{} ERR", command_str), child.stderr.take().unwrap()),
             child: RefCell::new(child),
+            command_str,
         }
     }
 
