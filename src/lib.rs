@@ -304,6 +304,15 @@ pub trait Consumer {
 #[non_exhaustive]
 pub struct EmptyStockFailure;
 
+impl EmptyStockFailure {
+    /// Creates a new [`EmptyStockFailure`].
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
 impl Failure for EmptyStockFailure {
     type Fault = Infallible;
 }
@@ -323,6 +332,15 @@ impl TryFrom<EmptyStockFailure> for Infallible {
 #[error("stock is full")]
 #[non_exhaustive]
 pub struct FullStockFailure;
+
+impl FullStockFailure {
+    /// Creates a new [`FullStockFailure`].
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl Failure for FullStockFailure {
     type Fault = Infallible;
