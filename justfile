@@ -96,10 +96,6 @@ lint: _install_lint
      -A clippy::implicit_return \
      -A clippy::redundant_pub_crate \
 
-# Create pull request for resolving <issue_num>
-pr issue_num:
-    hub pull-request --push -m "`hub issue show -f "%t" {{issue_num}}`" -m "Closes #{{issue_num}}"
-
 # Configures the version of rust
 set_rust version:
     rustup override set {{version}}
