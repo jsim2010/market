@@ -2,7 +2,7 @@
 use {
     crate::{
         queue::{self, Procurer, Supplier},
-        ConsumeFailure, Consumer, Failure, InsufficientStockFailure, Producer,
+        ConsumeFailure, Consumer, Failure, EmptyStockFailure, Producer,
     },
     conventus::{AssembleFailure, AssembleFrom, DisassembleInto},
     core::{
@@ -133,7 +133,7 @@ pub(crate) struct PartsOutput<P> {
 
 impl<P> Consumer for PartsOutput<P> {
     type Good = P;
-    type Failure = InsufficientStockFailure;
+    type Failure = EmptyStockFailure;
 
     #[inline]
     #[throws(Self::Failure)]
