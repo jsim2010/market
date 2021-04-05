@@ -5,14 +5,14 @@ on:
 
 jobs:
   approve:
-    if: ${{ github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label == 'Designing'}}
+    if: ${{ github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'Designing'}}
     runs-on: ubuntu-latest
     steps:
     - name: checkout project
       uses: actions/checkout@v2
 
     - name: create branch
-      run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /-} && git switch -c ${BRANCH} && git push -u origin ${BRANCH}
+      run: DEBUG="${{ github.event.label }}" && START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /-} && git switch -c ${BRANCH} && git push -u origin ${BRANCH}
 
     - name: update issue
       run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH = ${START// /-} && git issue comment ${{ github.event.issue.number }} --body "Issue was approved and linked to created branch '${BRANCH}'"
