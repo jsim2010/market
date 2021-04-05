@@ -1,0 +1,17 @@
+name: Partite
+on:
+  issues:
+    types: [assigned]
+  pull_request:
+    types: [closed]
+
+jobs:
+  approve:
+    if: ${{ github.event_name == 'issues' && github.event.action == 'assigned' }}
+    runs-on: ubuntu-latest
+    steps:
+    - name: create branch
+      run: git switch -c ${{ github.event.issue.number }}-${${{ github.event.issue.title }}// /-} && git push -u origin ${{ github.event.issue.number }}-${${{ github.event.issue.title }}// /-}
+
+    - name: update issue
+      run: gh issue comment ${{ github.event.issue.number }} --body "Issue was approved and linked to created branch '${{ github.event.issue.number }}-${${{ github.event.issue.title }}// /-}'"
