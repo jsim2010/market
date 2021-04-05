@@ -10,6 +10,9 @@ jobs:
     if: ${{ github.event_name == 'issues' && github.event.action == 'assigned' }}
     runs-on: ubuntu-latest
     steps:
+    - name: checkout project
+      uses: actions/checkout@v2
+
     - name: create branch
       run: BRANCH=${${{ github.event.issue.number }}-${{ github.event.issue.title }}// /-} && git switch -c ${BRANCH} && git push -u origin ${BRANCH}
 
