@@ -1,5 +1,5 @@
 use {
-    core::cell::RefCell,
+    core::{cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
     market::*,
     std::{
@@ -42,30 +42,16 @@ impl Producer for MockProducer {
     }
 }
 
-fn cmp_recall(
-    recall: Recall<u8, IntoIter<u8>, ProduceFailure<MockFault>>,
-    goods: Vec<u8>,
-    failure: ProduceFailure<MockFault>,
-) {
-    let (mut good_iter, error) = recall.redeem();
+fn cmp_recall<E: Debug + PartialEq>(recall: Recall<u8, IntoIter<u8>, E>, goods: Vec<u8>, error: E) {
+    let (mut good_iter, err) = recall.redeem();
 
-    assert_eq!(error, failure);
+    assert_eq!(err, error);
 
     for good in goods {
         assert_eq!(good_iter.next(), Some(good));
     }
 }
 
-/// GIVEN
-/// - `producer: Producer`
-/// - `goods: IntoIterator`
-///
-/// WHEN
-/// - `producer.produce_all(goods)`
-///
-/// THEN
-/// - `produce_all()` does not throw an error
-/// - `producer` stores `goods`
 #[test]
 fn produce_all_success() {
     let producer = MockProducer::default();
@@ -75,16 +61,6 @@ fn produce_all_success() {
     assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]))
 }
 
-/// GIVEN
-/// - `producer: Producer` and first call of `producer.produce()` throws insufficent stock failure
-/// - `goods: IntoIterator`
-///
-/// WHEN
-/// - `producer.produce_all(goods)`
-///
-/// THEN
-/// - `produce_all()` throws `Recall` with `goods` and insufficient stock failure
-/// - `producer` does not store `goods`.
 #[test]
 fn produce_all_insufficient_stock() {
     let mut producer = MockProducer::default();
@@ -101,7 +77,7 @@ fn produce_all_insufficient_stock() {
 }
 
 #[test]
-fn produce_all_failure_start() {
+fn produce_all_fault() {
     let mut producer = MockProducer::default();
     let goods = vec![0, 1, 2];
 
@@ -112,10 +88,11 @@ fn produce_all_failure_start() {
         vec![0, 1, 2],
         ProduceFailure::Fault(MockFault),
     );
+    assert_eq!(producer.goods, RefCell::new(vec![]));
 }
 
 #[test]
-fn produce_all_failure_middle() {
+fn produce_all_fault_middle() {
     let mut producer = MockProducer::default();
     let goods = vec![0, 1, 2];
 
@@ -138,7 +115,7 @@ fn force_success() {
 }
 
 #[test]
-fn force_full_start() {
+fn force_insufficient_stock() {
     let mut producer = MockProducer::default();
 
     producer.fail_on_produce_call(0, ProduceFailure::FullStock);
@@ -148,7 +125,7 @@ fn force_full_start() {
 }
 
 #[test]
-fn force_failure() {
+fn force_fault() {
     let mut producer = MockProducer::default();
 
     producer.fail_on_produce_call(0, ProduceFailure::Fault(MockFault));
@@ -156,4 +133,65 @@ fn force_failure() {
 
     assert_eq!(good, 0);
     assert_eq!(fault, MockFault);
+}
+
+#[test]
+fn force_all_success() {
+    let producer = MockProducer::default();
+    let goods = vec![0, 1, 2];
+
+    assert_eq!(producer.force_all(goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_all_insufficient_stock() {
+    let mut producer = MockProducer::default();
+    let goods = vec![0, 1, 2];
+
+    producer.fail_on_produce_call(0, ProduceFailure::FullStock);
+
+    assert_eq!(producer.force_all(goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_all_insufficient_stock_middle() {
+    let mut producer = MockProducer::default();
+    let goods = vec![0, 1, 2];
+
+    producer.fail_on_produce_call(1, ProduceFailure::FullStock);
+
+    assert_eq!(producer.force_all(goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_all_fault() {
+    let mut producer = MockProducer::default();
+    let goods = vec![0, 1, 2];
+
+    producer.fail_on_produce_call(0, ProduceFailure::Fault(MockFault));
+
+    cmp_recall(
+        producer.force_all(goods).unwrap_err(),
+        vec![0, 1, 2],
+        MockFault,
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![]));
+}
+
+#[test]
+fn force_all_fault_middle() {
+    let mut producer = MockProducer::default();
+    let goods = vec![0, 1, 2];
+
+    producer.fail_on_produce_call(1, ProduceFailure::Fault(MockFault));
+
+    cmp_recall(
+        producer.force_all(goods).unwrap_err(),
+        vec![1, 2],
+        MockFault,
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![0]));
 }
