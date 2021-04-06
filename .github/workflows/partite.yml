@@ -1,18 +1,18 @@
 name: Partite
 on:
-  issues:
-    types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
   approve:
-    if: ${{ github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'Designing'}}
+    if: ${{ endsWith(github.event.comment.body, '/approve') }}
     runs-on: ubuntu-latest
     steps:
     - name: checkout project
       uses: actions/checkout@v2
 
     - name: create branch
-      run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /-} && git switch -c ${BRANCH} && git push -u origin ${BRANCH}
+      run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /_} && git switch -c ${BRANCH} && git push -u origin ${BRANCH}
 
     - name: update issue
-      run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /-} && git issue comment ${{ github.event.issue.number }} --body "Issue was approved and linked to created branch '${BRANCH}'"
+      run: START="${{ github.event.issue.number }}-${{ github.event.issue.title }}" && BRANCH=${START// /_} && gh issue comment ${{ github.event.issue.number }} --body "Created branch '${BRANCH}'"
