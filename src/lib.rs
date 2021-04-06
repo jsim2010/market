@@ -202,31 +202,67 @@ impl<C: Consumer> Iterator for Goods<'_, C> {
     }
 }
 
-/// An error thrown when a [`Consumer`] fails to generate a composite from its goods.
-#[allow(clippy::exhaustive_enums)] // It is intended that these shall be the only variants in ComposeError.
+/// Characterizes the construction of a item from a sequence of `P` items.
+pub trait Builder<P> {
+    /// Specifies the composite to be built.
+    type Output;
+    /// Specifies the error thrown when a build fails.
+    type Error;
+
+    /// Builds a composite item of type `Self::Output` from `parts`.
+    ///
+    /// If a composite is built, the parts used for the build are removed from `parts`. If `parts` is the start of a valid sequence of parts but requires more elements to create a composite, SHALL return [`Poll::Pending`].
+    ///
+    /// # Errors
+    ///
+    /// If `parts` are not the start of a valid sequence, throws `Self::Error`.
+    #[throws(Self::Error)]
+    fn build(&self, parts: &mut Vec<P>) -> Poll<Self::Output>;
+}
+
+/// Collects parts of type `P` that can be built into composites.
 #[derive(Debug)]
+pub struct Composer<P, B> {
+    /// The parts that make up composites.
+    parts: Vec<P>,
+    /// The [`Builder`] of composites.
+    builder: B,
+}
+
+impl<P, B: Builder<P>> Composer<P, B> {
+    /// Creates a new [`Composer`].
+    #[inline]
+    pub fn new(builder: B) -> Self {
+        Self {
+            parts: Vec::new(),
+            builder,
+        }
+    }
+
+    /// Adds `parts` to the parts stored in `self`.
+    fn append(&mut self, mut parts: Vec<P>) {
+        self.parts.append(&mut parts);
+    }
+
+    /// Builds a composite from the parts stored in `self`.
+    ///
+    /// # Errors
+    ///
+    /// If error is caught during build, the error shall be thrown.
+    #[throws(B::Error)]
+    fn build(&mut self) -> Poll<B::Output> {
+        self.builder.build(&mut self.parts)?
+    }
+}
+
+/// An error thrown when a [`Consumer`] fails to build a composite from its goods.
+#[allow(clippy::exhaustive_enums)] // It is intended that these shall be the only variants in ComposeError.
+#[derive(Debug, PartialEq)]
 pub enum ComposeError<T, E> {
     /// The [`Consumer`] failed consuming goods.
     Consume(T),
     /// The [`Composer`] failed generating a composite.
     Build(E),
-}
-
-/// Characterizes an item that generates a composite from items of type `P`.
-pub trait Composer<P> {
-    /// Specifies the composite to be generated.
-    type Composite;
-    /// Specifies the error thrown when composition fails.
-    type Error;
-
-    /// Appends `parts` to those already given to `self` and returns the generated composite.
-    ///
-    /// `self` keeps all parts that are not used for composition.
-    ///
-    /// # Errors
-    ///
-    /// If a composite cannot be generated from the stored parts and the parts cannot be the start of a composite, SHALL throw a [`Self::Error`].
-    fn append(&mut self, parts: Vec<P>) -> Result<Poll<Self::Composite>, Self::Error>;
 }
 
 /// Characterizes an agent that retrieves goods from a market.
@@ -255,24 +291,37 @@ pub trait Consumer {
         Goods { consumer: self }
     }
 
-    /// Appends all current goods from the market to `compiler` and returns the generated composite.
+    /// Appends all current goods from the market to `composer` and returns the generated composite.
     ///
     /// # Errors
     ///
-    /// If a fault is caught while consuming, SHALL throw a [`ComposeError::Consume`]. If an error is caught while composing, SHALL throw a [`ComposeError::Build`].
+    /// If a fault is caught while consuming, SHALL throw a [`ComposeError::Consume`]. If an error is caught while composing, SHALL throw a [`ComposeError::Build`]. In both cases, successfully consumed goods are appended to `composer`.
     #[inline]
-    #[throws(ComposeError<<Self::Failure as Failure>::Fault, P::Error>)]
-    fn compose<P: Composer<Self::Good>>(&self, compiler: &mut P) -> Poll<P::Composite>
-    where
-        Self: Sized,
-    {
-        compiler
-            .append(
-                self.goods()
-                    .collect::<Result<Vec<Self::Good>, <Self::Failure as Failure>::Fault>>()
-                    .map_err(ComposeError::Consume)?,
-            )
-            .map_err(ComposeError::Build)?
+    #[throws(ComposeError<<Self::Failure as Failure>::Fault, B::Error>)]
+    fn compose<B: Builder<Self::Good>>(
+        &self,
+        composer: &mut Composer<Self::Good, B>,
+    ) -> Poll<B::Output> {
+        let mut goods = Vec::new();
+
+        // Consume until a failure while keeping all the successfully consumed goods.
+        let failure = loop {
+            match self.consume() {
+                Ok(good) => {
+                    goods.push(good);
+                }
+                Err(failure) => {
+                    break failure;
+                }
+            }
+        };
+        composer.append(goods);
+
+        if let Ok(fault) = failure.try_into() {
+            throw!(ComposeError::Consume(fault));
+        }
+
+        composer.build().map_err(ComposeError::Build)?
     }
 
     /// Retrieves the next good from the market, blocking until one is available.
@@ -360,7 +409,7 @@ impl TryFrom<FullStockFailure> for Infallible {
 ///
 /// This SHOULD be used in all cases where a [`Consumer`] can catch a fault of type `T` and can fail due to the stock being empty.
 #[allow(clippy::exhaustive_enums)] // It is intended that these shall be the only variants in ConsumeFailure.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum ConsumeFailure<T> {
     /// The stock of the market is empty.
     EmptyStock,
