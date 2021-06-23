@@ -49,7 +49,7 @@ fix_format: _install_format
 #
 # Lints the project source code
 lint: _install_lint
-    cargo +nightly clippy --all-features -- \
+    cargo clippy --features std -- \
      -D warnings \
      -D absolute_paths_not_starting_with_crate \
      -D anonymous_parameters \
