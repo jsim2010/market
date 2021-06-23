@@ -1,3 +1,5 @@
+set shell := ["bash", "-c"]
+
 alias b := build
 alias d := doc
 alias f := fix
@@ -10,9 +12,8 @@ alias v := validate
 # Builds the project
 build:
     cargo build
+    cargo build --features std
 
-# This ideally would use some conditional functionality built into just.
-#
 # Installs everything needed for dependencies
 _install_deps:
     cargo deny --version || cargo install cargo-deny
@@ -27,11 +28,7 @@ _install_lint:
 
 # Generates documentation for public items
 doc:
-    cargo doc
-
-# Generates documentation for public and private items
-doc_all:
-    cargo doc --document-private-items
+    cargo +nightly doc --all-features
 
 # Fixes issues that can be addressed automatically
 fix: _install_format fix_format
@@ -42,15 +39,17 @@ fix_format: _install_format
 
 # Any lint that is allowed is explained below:
 # - box_pointers: box pointers are okay and useful
+# - unstable_features: needed for doc_cfg
 # - variant_size_differences: handled by clippy::large_enum_variant
 # - clippy::empty_enum: recommended `!` type is not stable
+# - clippy::module_name_repetitions: repeating the module name in an item can be useful when it clarifies the function of the item
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::implicit_return: rust convention calls for implicit return
 # - clippy::redundant_pub_crate: conflicts with unreachable_pub
 #
 # Lints the project source code
 lint: _install_lint
-    cargo clippy -- \
+    cargo +nightly clippy --all-features -- \
      -D warnings \
      -D absolute_paths_not_starting_with_crate \
      -D anonymous_parameters \
@@ -75,7 +74,7 @@ lint: _install_lint
      -D unaligned_references \
      -D unreachable_pub \
      -D unsafe_code \
-     -D unstable_features \
+     -A unstable_features \
      -D unused_crate_dependencies \
      -D unused_extern_crates \
      -D unused_import_braces \
@@ -92,6 +91,7 @@ lint: _install_lint
      -D clippy::cargo \
      -D clippy::nursery \
      -A clippy::empty_enum \
+     -A clippy::module_name_repetitions \
      -A clippy::multiple_crate_versions \
      -A clippy::implicit_return \
      -A clippy::redundant_pub_crate \
@@ -102,10 +102,10 @@ set_rust version:
 
 # Runs tests
 test:
-    cargo test --verbose --all-features
+    cargo +nightly test --verbose --all-features
 
 # Validates the project
-validate: (set_rust "1.51.0") validate_format validate_deps lint build test validate_doc
+validate: (set_rust "1.52.1") validate_format validate_deps lint build test validate_doc
 
 # Validates dependencies of the project
 validate_deps: _install_deps
@@ -113,7 +113,7 @@ validate_deps: _install_deps
 
 # Validates the documentation of the project
 validate_doc:
-    cargo rustdoc -- -D rustdoc
+    cargo rustdoc -- -D rustdoc::all
 
 # Validates the formatting of the project
 validate_format: _install_format

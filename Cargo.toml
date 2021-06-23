@@ -1,6 +1,6 @@
 [package]
 name = "market"
-version = "0.27.1"
+version = "0.28.0"
 authors = ["Justin Simerly <jsim2010@gmail.com>"]
 description = "Infrastructure for producers and consumers"
 license = "MIT"
@@ -12,5 +12,11 @@ edition = "2018"
 
 [dependencies]
 fehler = "1.0.0"
-market_derive = { path = "derive", version = "0.1.0" }
-thiserror = "1.0.0"
+never = { version = "0.1.0", default-features = false }
+
+[features]
+unstable-doc-cfg = []
+std = ["never/std"]
+
+[package.metadata.docs.rs]
+rustc-args = ["--all-features"]
