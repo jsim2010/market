@@ -102,7 +102,7 @@ set_rust version:
 
 # Runs tests
 test:
-    cargo +nightly test --verbose --all-features
+    cargo test --verbose
 
 # Validates the project
 validate: (set_rust "1.52.1") validate_format validate_deps lint build test validate_doc
