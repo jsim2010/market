@@ -1,0 +1,1 @@
+market defines interfaces for agents that interact with a stock of goods by either storing goods into the stock or retrieving goods from the stock. All agents are immutable while they are acting upon a stock.
