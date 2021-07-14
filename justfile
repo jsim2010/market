@@ -42,6 +42,7 @@ fix_format: _install_format
 # - unstable_features: needed for doc_cfg
 # - variant_size_differences: handled by clippy::large_enum_variant
 # - clippy::empty_enum: recommended `!` type is not stable
+# - clippy::missing_inline_in_public_items: compiler already attempts to handle this and there is no check for if a public function is converted to private
 # - clippy::module_name_repetitions: repeating the module name in an item can be useful when it clarifies the function of the item
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
 # - clippy::implicit_return: rust convention calls for implicit return
@@ -91,6 +92,7 @@ lint: _install_lint
      -D clippy::cargo \
      -D clippy::nursery \
      -A clippy::empty_enum \
+     -A clippy::missing_inline_in_public_items \
      -A clippy::module_name_repetitions \
      -A clippy::multiple_crate_versions \
      -A clippy::implicit_return \

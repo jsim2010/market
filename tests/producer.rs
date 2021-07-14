@@ -1,5 +1,5 @@
 use {
-    core::{cell::RefCell, fmt::Debug, iter::Once},
+    core::{cell::RefCell, fmt::Debug},
     fehler::{throw, throws},
     market::*,
     never::Never,
@@ -38,7 +38,7 @@ impl Agent for MockProducer {
 impl Producer for MockProducer {
     type Flaws = ProductionFlaws<MockDefect>;
 
-    #[throws(Recall<Self::Flaws, Once<Self::Good>>)]
+    #[throws(LoneRecall<Self::Flaws, Self::Good>)]
     fn produce(&self, good: Self::Good) {
         if let Some((call, fault)) = self.fail_on_call {
             if call == self.calls.fetch_add(1, Ordering::Relaxed) {

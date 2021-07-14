@@ -7,7 +7,7 @@ use {
     core::{
         convert::TryFrom,
         fmt::{self, Debug, Display, Formatter},
-        iter::{self, Chain, Once},
+        iter::Chain,
         marker::PhantomData,
     },
     fehler::{throw, throws},
@@ -59,7 +59,6 @@ pub enum Fault<F: Flaws> {
 
 impl<F: Flaws> Fault<F> {
     /// Returns if `self` is a defect.
-    #[inline]
     fn is_defect(&self) -> bool {
         matches!(*self, Self::Defect(_))
     }
@@ -70,7 +69,6 @@ where
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
-    #[inline]
     fn blame(self) -> Fault<W> {
         match self {
             Fault::Insufficiency(insufficiency) => {
@@ -86,7 +84,6 @@ where
     F::Insufficiency: Clone,
     F::Defect: Clone,
 {
-    #[inline]
     fn clone(&self) -> Self {
         match *self {
             Self::Insufficiency(ref insufficiency) => Self::Insufficiency(insufficiency.clone()),
@@ -107,8 +104,6 @@ where
     F::Insufficiency: Debug,
     F::Defect: Debug,
 {
-    /// Writes the default debug format for `self`.
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Insufficiency(ref insufficiency) => {
@@ -124,10 +119,6 @@ where
     F::Insufficiency: Display,
     F::Defect: Display,
 {
-    /// Writes the display format of `self`.
-    ///
-    /// If `self` is [`Fault::Insufficiency(insufficiency)`], write "insufficient {insufficiency}". If `self` is [`Fault::Defect(defect)`], write "{defect}".
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match *self {
             Self::Insufficiency(ref insufficiency) => write!(f, "insufficient {}", insufficiency),
@@ -141,7 +132,6 @@ where
     F::Insufficiency: PartialEq,
     F::Defect: PartialEq,
 {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         match *self {
             Fault::Insufficiency(ref insufficiency) => {
@@ -169,7 +159,6 @@ where
 {
     type Error = FaultConversionError<W, F>;
 
-    #[inline]
     #[throws(Self::Error)]
     fn try_blame(self) -> Fault<W> {
         match self {
@@ -194,13 +183,11 @@ pub struct Failure<F: Flaws> {
 
 impl<F: Flaws> Failure<F> {
     /// Creates a new [`Failure`] with the `agent_name`and `fault` that caused the failure.
-    #[inline]
     pub(crate) fn new(fault: Fault<F>, agent_name: String) -> Self {
         Self { agent_name, fault }
     }
 
     /// Returns if `self` was caused by a defect.
-    #[inline]
     pub fn is_defect(&self) -> bool {
         self.fault.is_defect()
     }
@@ -211,7 +198,6 @@ where
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
-    #[inline]
     fn blame(self) -> Failure<W> {
         Failure::new(self.fault.blame(), self.agent_name)
     }
@@ -223,7 +209,6 @@ where
     F::Defect: Debug,
 {
     /// Writes the default debug format for `self`.
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Failure")
             .field("agent_name", &self.agent_name)
@@ -238,7 +223,6 @@ where
     F::Defect: Display,
 {
     /// Writes "{name}: {fault}".
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}: {}", self.agent_name, self.fault)
     }
@@ -258,7 +242,6 @@ where
     F::Insufficiency: PartialEq,
     F::Defect: PartialEq,
 {
-    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.agent_name == other.agent_name && self.fault == other.fault
     }
@@ -271,7 +254,6 @@ where
 {
     type Error = FailureConversionError<W, F>;
 
-    #[inline]
     #[throws(Self::Error)]
     fn try_blame(self) -> Failure<W> {
         match self.fault.try_blame() {
@@ -284,26 +266,57 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct LoneGoodIter<G> {
+    good: Option<G>,
+}
+
+impl<D, G> Blame<LoneGoodIter<D>> for LoneGoodIter<G>
+where
+    D: From<G>,
+{
+    fn blame(self) -> LoneGoodIter<D> {
+        LoneGoodIter {
+            good: self.good.map(D::from),
+        }
+    }
+}
+
+impl<G> From<G> for LoneGoodIter<G> {
+    fn from(good: G) -> Self {
+        Self {
+            good: Some(good),
+        }
+    }
+}
+
+impl<G> Iterator for LoneGoodIter<G> {
+    type Item = G;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.good.take()
+    }
+}
+
 /// The error thrown when a [`Producer`] fails to produce one or more goods.
-pub struct Recall<F: Flaws, I: Iterator> {
+pub struct Recall<F: Flaws, I> {
     /// The goods that were not produced.
-    ///
-    /// Goods are stored as an [`Iterator`] to keep their processing as lazy as possible.
     goods: I,
     /// The failure.
     failure: Failure<F>,
 }
 
-impl<F: Flaws, I: Iterator> Recall<F, I> {
+impl<F: Flaws, I> Recall<F, I> {
     /// Creates a new [`Recall`] with the `failure` and `goods` that were not produced.
-    #[inline]
     pub(crate) fn new<N: IntoIterator<IntoIter = I>>(failure: Failure<F>, goods: N) -> Self {
         Self {
             goods: goods.into_iter(),
             failure,
         }
     }
+}
 
+impl<F: Flaws, I: Iterator> Recall<F, I> {
     /// Creates a new [`Recall`] with `goods` chained after the goods in `self`.
     pub(crate) fn chain<N: IntoIterator<Item = I::Item>>(
         self,
@@ -313,33 +326,27 @@ impl<F: Flaws, I: Iterator> Recall<F, I> {
     }
 }
 
-impl<F: Flaws, W: Flaws, D, G: From<D>> Blame<LoneRecall<W, G>> for LoneRecall<F, D>
+impl<F: Flaws, I, W: Flaws, T> Blame<Recall<W, T>> for Recall<F, I>
 where
+    T: Iterator,
+    I: Blame<T>,
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
-    #[inline]
-    fn blame(self) -> LoneRecall<W, G> {
-        let mut goods = self.goods;
-        #[allow(clippy::expect_used)] // Assume that self has not iterated on its single good.
+    fn blame(self) -> Recall<W, T> {
         Recall::new(
             self.failure.blame(),
-            iter::once(G::from(
-                goods
-                    .next()
-                    .expect("Retrieving the single good from a LoneRecall"),
-            )),
+            self.goods.blame(),
         )
     }
 }
 
-impl<F: Flaws, I: Iterator + Debug> Debug for Recall<F, I>
+impl<F: Flaws, I: Debug> Debug for Recall<F, I>
 where
     F::Insufficiency: Debug,
     F::Defect: Debug,
 {
     /// Writes the default debug format for `self`.
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Recall")
             .field("goods", &self.goods)
@@ -355,7 +362,6 @@ where
     I::Item: Display,
 {
     /// Writes "`{}` caused recall of goods [{goods}]".
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "`{}` caused recall of goods [", self.failure)?;
         let mut goods = self.goods.clone();
@@ -388,7 +394,6 @@ where
     F::Defect: PartialEq,
     I::Item: PartialEq<T::Item>,
 {
-    #[inline]
     fn eq(&self, other: &Recall<F, T>) -> bool {
         if self.failure == other.failure {
             let mut my_goods = self.goods.clone();
@@ -415,30 +420,29 @@ where
     }
 }
 
-impl<F: Flaws, W: Flaws, I: Iterator> TryBlame<Recall<W, I>> for Recall<F, I>
+impl<F: Flaws, I, W: Flaws, T> TryBlame<Recall<W, T>> for Recall<F, I>
 where
     W::Insufficiency: TryFrom<F::Insufficiency>,
     W::Defect: TryFrom<F::Defect>,
+    T: Iterator,
+    I: Blame<T>,
 {
     type Error = RecallConversionError<W, F, I>;
 
-    #[inline]
     #[throws(Self::Error)]
-    fn try_blame(self) -> Recall<W, I> {
+    fn try_blame(self) -> Recall<W, T> {
         match self.failure.try_blame() {
-            Ok(failure) => Recall::new(failure, self.goods),
+            Ok(failure) => Recall::new(failure, self.goods.blame()),
             Err(error) => throw!(RecallConversionError {
-                goods: self.goods,
-                error
+                error,
+                goods: self.goods
             }),
         }
     }
 }
 
-/// Specifies a [`Recall`] that only contains a single good.
-pub type LoneRecall<F, G> = Recall<F, Once<G>>;
-
 /// The error thrown when `Fault::blame()` fails.
+#[non_exhaustive]
 pub enum FaultConversionError<F: Flaws, W: Flaws>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
@@ -553,10 +557,10 @@ where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     F::Defect: TryFrom<W::Defect>,
 {
-    /// The goods from the original [`Recall`].
-    goods: I,
-    /// The cause of the error.
+    /// The error when converting the [`Failure`].
     error: FailureConversionError<F, W>,
+    /// The goods in the recall.
+    goods: I,
 }
 
 impl<F: Flaws, W: Flaws, I> RecallConversionError<F, W, I>
@@ -564,7 +568,6 @@ where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     F::Defect: TryFrom<W::Defect>,
 {
-    /// Converts `self` into its goods.
     pub(crate) fn into_goods(self) -> I {
         self.goods
     }
@@ -622,6 +625,9 @@ where
 {
 }
 
+/// Signifies a fault that can never occur.
+pub type Flawless = Never;
+
 /// The insufficiency thrown when a [`Producer`] attempts to produce to a market that has no stock available.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
@@ -629,7 +635,6 @@ pub struct FullStock;
 
 impl Display for FullStock {
     /// Writes "stock".
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "stock")
     }
@@ -637,7 +642,7 @@ impl Display for FullStock {
 
 impl Flaws for FullStock {
     type Insufficiency = Self;
-    type Defect = Never;
+    type Defect = Flawless;
 }
 
 /// The insufficiency thrown when a [`Consumer`] attempts to consume from a market that has no goods available.
@@ -647,7 +652,6 @@ pub struct EmptyStock;
 
 impl Display for EmptyStock {
     /// Writes "goods".
-    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "goods")
     }
@@ -655,7 +659,7 @@ impl Display for EmptyStock {
 
 impl Flaws for EmptyStock {
     type Insufficiency = Self;
-    type Defect = Never;
+    type Defect = Flawless;
 }
 
 /// Specifies the [`Flaws`] of a [`Producer`] producing to a finite market with defects of type `D`.
@@ -682,24 +686,22 @@ impl<D> Flaws for ConsumptionFlaws<D> {
     type Defect = D;
 }
 
-impl Flaws for Never {
+impl Flaws for Flawless {
     type Insufficiency = Self;
     type Defect = Self;
 }
 
-impl TryFrom<EmptyStock> for Never {
+impl TryFrom<EmptyStock> for Flawless {
     type Error = ();
 
-    #[inline]
     fn try_from(_: EmptyStock) -> Result<Self, Self::Error> {
         Err(())
     }
 }
 
-impl TryFrom<FullStock> for Never {
+impl TryFrom<FullStock> for Flawless {
     type Error = ();
 
-    #[inline]
     fn try_from(_: FullStock) -> Result<Self, Self::Error> {
         Err(())
     }
