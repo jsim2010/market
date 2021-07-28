@@ -7,7 +7,6 @@ use {
     core::{
         convert::TryFrom,
         fmt::{self, Debug, Display, Formatter},
-        iter::Chain,
         marker::PhantomData,
     },
     fehler::{throw, throws},
@@ -266,82 +265,33 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct LoneGoodIter<G> {
-    good: Option<G>,
-}
-
-impl<D, G> Blame<LoneGoodIter<D>> for LoneGoodIter<G>
-where
-    D: From<G>,
-{
-    fn blame(self) -> LoneGoodIter<D> {
-        LoneGoodIter {
-            good: self.good.map(D::from),
-        }
-    }
-}
-
-impl<G> From<G> for LoneGoodIter<G> {
-    fn from(good: G) -> Self {
-        Self {
-            good: Some(good),
-        }
-    }
-}
-
-impl<G> Iterator for LoneGoodIter<G> {
-    type Item = G;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.good.take()
-    }
-}
-
-/// The error thrown when a [`Producer`] fails to produce one or more goods.
-pub struct Recall<F: Flaws, I> {
-    /// The goods that were not produced.
-    goods: I,
+/// The error thrown when a [`Producer`] fails to produce a good.
+pub struct Recall<F: Flaws, G> {
+    /// The good that was not produced.
+    good: G,
     /// The failure.
     failure: Failure<F>,
 }
 
-impl<F: Flaws, I> Recall<F, I> {
-    /// Creates a new [`Recall`] with the `failure` and `goods` that were not produced.
-    pub(crate) fn new<N: IntoIterator<IntoIter = I>>(failure: Failure<F>, goods: N) -> Self {
-        Self {
-            goods: goods.into_iter(),
-            failure,
-        }
+impl<F: Flaws, G> Recall<F, G> {
+    /// Creates a new [`Recall`] with the `failure` and `good` that was not produced.
+    pub(crate) fn new(failure: Failure<F>, good: G) -> Self {
+        Self { good, failure }
     }
 }
 
-impl<F: Flaws, I: Iterator> Recall<F, I> {
-    /// Creates a new [`Recall`] with `goods` chained after the goods in `self`.
-    pub(crate) fn chain<N: IntoIterator<Item = I::Item>>(
-        self,
-        goods: N,
-    ) -> Recall<F, Chain<I, N::IntoIter>> {
-        Recall::new(self.failure, self.goods.chain(goods))
-    }
-}
-
-impl<F: Flaws, I, W: Flaws, T> Blame<Recall<W, T>> for Recall<F, I>
+impl<F: Flaws, G, W: Flaws, T> Blame<Recall<W, T>> for Recall<F, G>
 where
-    T: Iterator,
-    I: Blame<T>,
+    T: From<G>,
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
     fn blame(self) -> Recall<W, T> {
-        Recall::new(
-            self.failure.blame(),
-            self.goods.blame(),
-        )
+        Recall::new(self.failure.blame(), T::from(self.good))
     }
 }
 
-impl<F: Flaws, I: Debug> Debug for Recall<F, I>
+impl<F: Flaws, G: Debug> Debug for Recall<F, G>
 where
     F::Insufficiency: Debug,
     F::Defect: Debug,
@@ -349,93 +299,60 @@ where
     /// Writes the default debug format for `self`.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Recall")
-            .field("goods", &self.goods)
+            .field("good", &self.good)
             .field("failure", &self.failure)
             .finish()
     }
 }
 
-impl<F: Flaws, I: Iterator + Clone> Display for Recall<F, I>
+impl<F: Flaws, G> Display for Recall<F, G>
 where
     F::Insufficiency: Display,
     F::Defect: Display,
-    I::Item: Display,
+    G: Display,
 {
     /// Writes "`{}` caused recall of goods [{goods}]".
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "`{}` caused recall of goods [", self.failure)?;
-        let mut goods = self.goods.clone();
-
-        if let Some(good) = goods.next() {
-            write!(f, "{}", good)?;
-        }
-
-        for good in goods {
-            write!(f, ", {}", good)?;
-        }
-
-        write!(f, "]")
+        write!(f, "`{}` caused recall of good {}", self.failure, self.good)
     }
 }
 
 #[cfg(feature = "std")]
 #[cfg_attr(feature = "unstable-doc-cfg", doc(cfg(feature = "std")))]
-impl<F: Flaws, I: Iterator + Debug + Clone> std::error::Error for Recall<F, I>
+impl<F: Flaws, G> std::error::Error for Recall<F, G>
 where
     F::Insufficiency: Debug + Display,
     F::Defect: Debug + Display,
-    I::Item: Display,
+    G: Debug + Display,
 {
 }
 
-impl<F: Flaws, I: Iterator + Clone, T: Iterator + Clone> PartialEq<Recall<F, T>> for Recall<F, I>
+impl<F: Flaws, G> PartialEq for Recall<F, G>
 where
     F::Insufficiency: PartialEq,
     F::Defect: PartialEq,
-    I::Item: PartialEq<T::Item>,
+    G: PartialEq,
 {
-    fn eq(&self, other: &Recall<F, T>) -> bool {
-        if self.failure == other.failure {
-            let mut my_goods = self.goods.clone();
-            let mut other_goods = other.goods.clone();
-
-            let are_mine_equal = loop {
-                if let Some(my_good) = my_goods.next() {
-                    if let Some(other_good) = other_goods.next() {
-                        if my_good != other_good {
-                            break false;
-                        }
-                    } else {
-                        break false;
-                    }
-                } else {
-                    break true;
-                }
-            };
-
-            are_mine_equal && other_goods.next().is_none()
-        } else {
-            false
-        }
+    fn eq(&self, other: &Self) -> bool {
+        self.failure == other.failure && self.good == other.good
     }
 }
 
-impl<F: Flaws, I, W: Flaws, T> TryBlame<Recall<W, T>> for Recall<F, I>
+impl<F: Flaws, G, W: Flaws, T> TryBlame<Recall<W, T>> for Recall<F, G>
 where
     W::Insufficiency: TryFrom<F::Insufficiency>,
     W::Defect: TryFrom<F::Defect>,
-    T: Iterator,
-    I: Blame<T>,
+    T: From<G>,
 {
-    type Error = RecallConversionError<W, F, I>;
+    type Error = RecallConversionError<W, F, G>;
 
     #[throws(Self::Error)]
     fn try_blame(self) -> Recall<W, T> {
         match self.failure.try_blame() {
-            Ok(failure) => Recall::new(failure, self.goods.blame()),
+            Ok(failure) => Recall::new(failure, T::from(self.good)),
             Err(error) => throw!(RecallConversionError {
                 error,
-                goods: self.goods
+                good: self.good,
             }),
         }
     }
@@ -552,28 +469,29 @@ where
 }
 
 /// The error thrown when `Recall::blame()` fails.
-pub struct RecallConversionError<F: Flaws, W: Flaws, I>
+pub struct RecallConversionError<F: Flaws, W: Flaws, G>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     F::Defect: TryFrom<W::Defect>,
 {
     /// The error when converting the [`Failure`].
     error: FailureConversionError<F, W>,
-    /// The goods in the recall.
-    goods: I,
+    /// The good in the recall.
+    good: G,
 }
 
-impl<F: Flaws, W: Flaws, I> RecallConversionError<F, W, I>
+impl<F: Flaws, W: Flaws, G> RecallConversionError<F, W, G>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     F::Defect: TryFrom<W::Defect>,
 {
-    pub(crate) fn into_goods(self) -> I {
-        self.goods
+    /// Converts `self` into a `G`.
+    pub(crate) fn into_good(self) -> G {
+        self.good
     }
 }
 
-impl<F: Flaws, W: Flaws, I: Debug> Debug for RecallConversionError<F, W, I>
+impl<F: Flaws, W: Flaws, G: Debug> Debug for RecallConversionError<F, W, G>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     <F::Insufficiency as TryFrom<W::Insufficiency>>::Error: Debug,
@@ -582,46 +500,38 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecallConversionError")
-            .field("goods", &self.goods)
+            .field("good", &self.good)
             .field("error", &self.error)
             .finish()
     }
 }
 
-impl<F: Flaws, W: Flaws, I: Iterator + Clone> Display for RecallConversionError<F, W, I>
+impl<F: Flaws, W: Flaws, G> Display for RecallConversionError<F, W, G>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     <F::Insufficiency as TryFrom<W::Insufficiency>>::Error: Display,
     F::Defect: TryFrom<W::Defect>,
     <F::Defect as TryFrom<W::Defect>>::Error: Display,
-    I::Item: Display,
+    G: Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{} - goods [", self.error)?;
-        let mut goods = self.goods.clone();
-
-        if let Some(good) = goods.next() {
-            write!(f, "{}", good)?;
-        }
-
-        for good in goods {
-            write!(f, ", {}", good)?;
-        }
-
-        write!(f, "]")
+        write!(
+            f,
+            "{} while converting recall with good {}",
+            self.error, self.good
+        )
     }
 }
 
 #[cfg(feature = "std")]
 #[cfg_attr(feature = "unstable-doc-cfg", doc(cfg(feature = "std")))]
-impl<F: Flaws, W: Flaws, I: Clone + Debug + Iterator> std::error::Error
-    for RecallConversionError<F, W, I>
+impl<F: Flaws, W: Flaws, G> std::error::Error for RecallConversionError<F, W, G>
 where
     F::Insufficiency: TryFrom<W::Insufficiency>,
     <F::Insufficiency as TryFrom<W::Insufficiency>>::Error: Debug + Display,
     F::Defect: TryFrom<W::Defect>,
     <F::Defect as TryFrom<W::Defect>>::Error: Debug + Display,
-    I::Item: Display,
+    G: Debug + Display,
 {
 }
 

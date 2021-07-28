@@ -32,8 +32,14 @@ impl<F, W> core::fmt::Debug for FaultConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><Error: core::fmt::Debug>,
-        Defect: core::convert::TryFrom<W::Defect><Error: core::fmt::Debug>,
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
+            Error: core::fmt::Debug,
+        >,
+        Defect: core::convert::TryFrom<
+            W::Defect,
+            Error: core::fmt::Debug,
+        >,
     >,
 {}
 
@@ -41,8 +47,14 @@ impl<F, W> core::fmt::Display for FaultConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><Error: core::fmt::Display>,
-        Defect: core::convert::TryFrom<W::Defect><Error: core::fmt::Display>,
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
+            Error: core::fmt::Display,
+        >,
+        Defect: core::convert::TryFrom<
+            W::Defect,
+            Error: core::fmt::Display,
+        >,
     >,
 {}
 
@@ -51,11 +63,13 @@ impl<F, W> std::error::Error for FaultConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
-            Error: core::fmt::Debug + core::fmt::Display
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
+            Error: core::fmt::Debug + core::fmt::Display,
         >,
-        Defect: core::convert::TryFrom<W::Defect><
-            Error: core::fmt::Debug + core::fmt::Display
+        Defect: core::convert::TryFrom<
+            W::Defect,
+            Error: core::fmt::Debug + core::fmt::Display,
         >,
     >,
 {}
@@ -65,17 +79,19 @@ where
     W: Flaws,
     F: Flaws<
         Insufficiency: core::convert::TryFrom<W::Insufficiency>,
-        Defect: core::convert::TryFrom<W::Defect>;
-    >,
+        Defect: core::convert::TryFrom<W::Defect>,
+    >;
 
 impl<F, W> core::fmt::Debug for FailureConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Debug,
         >,
-        Defect: core::convert::TryFrom<W::Defect><
+        Defect: core::convert::TryFrom<
+            W::Defect,
             Error: core::fmt::Debug,
         >,
     >,
@@ -85,10 +101,12 @@ impl<F, W> core::fmt::Display for FailureConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Display,
         >,
-        Defect: core::convert::TryFrom<W::Defect><
+        Defect: core::convert::TryFrom<
+            W::Defect,
             Error: core::fmt::Display,
         >,
     >,
@@ -99,10 +117,12 @@ impl<F, W> std::error::Error for FailureConversionError<F, W>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Debug + core::fmt::Display,
         >,
-        Defect: core::convert::TryFrom<W::Defect>,
+        Defect: core::convert::TryFrom<
+            W::Defect,
             Error: core::fmt::Debug + core::fmt::Display,
         >,
     >,
@@ -120,10 +140,12 @@ impl<F, W, G> core::fmt::Debug for RecallConversionError<F, W, G>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Debug,
         >,
-        Defect: TryFrom<W::Defect><
+        Defect: TryFrom<
+            W::Defect,
             Error: core::fmt::Debug,
         >,
     >,
@@ -134,10 +156,12 @@ impl<F, W, G> core::fmt::Display for RecallConversionError<F, W, G>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Display,
         >,
-        Defect: TryFrom<W::Defect><
+        Defect: TryFrom<
+            W::Defect,
             Error: core::fmt::Display,
         >,
     >,
@@ -149,10 +173,12 @@ impl<F, W, G> std::error::Error for RecallConversionError<F, W, G>
 where
     W: Flaws,
     F: Flaws<
-        Insufficiency: core::convert::TryFrom<W::Insufficiency><
+        Insufficiency: core::convert::TryFrom<
+            W::Insufficiency,
             Error: core::fmt::Debug + core::fmt::Display,
         >,
-        Defect: TryFrom<W::Defect><
+        Defect: TryFrom<
+            W::Defect,
             Error: core::fmt::Debug + core::fmt::Display,
         >,
     >,
@@ -362,30 +388,6 @@ where
     type Error = RecallConversionError<W, F, G>;
 }
 
-// Provides the same functionality as core::iter::Once with the additional implementation of LoneGoodIter<G>: Blame<LoneGoodIter<D> where D: From<G>.
-struct LoneGoodIter<G>;
-
-impl<D, G> Blame<LoneGoodIter<D>> for LoneGoodIter<G>
-where
-    D: From<G>,
-{}
-
-impl<G> core::clone::Clone for LoneGoodIter<G>
-where
-    G: core::clone::Clone,
-{}
-
-impl<G> core::fmt::Debug for LoneGoodIter<G>
-where
-    G: core::fmt::Debug,
-{}
-
-impl<G> core::convert::From<G> for LoneGoodIter<G> {}
-
-impl<G> core::iter::Iterator for LoneGoodIter<G> {
-    type Item = G;
-}
-
 type Flawless = Never;
 
 impl Flaws for Flawless {
@@ -470,33 +472,32 @@ trait Agent {
 trait Producer: Agent {
     type Flaws: Flaws;
 
-    fn force(&self, good: Self::Good) -> core::result::Result<(), Recall<<Self::Flaws as Flaws>::Defect, LoneGoodIter<Self::Good>>>
+    fn force(&self, good: Self::Good) -> core::result::Result<(), Recall<<Self::Flaws as Flaws>::Defect, Self::Good>>
     where
         <Self::Flaws as Flaws>::Defect: Flaws<
-            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency,
+            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
             Defect = <Self::Flaws as Flaws>::Defect,
         >;
 
-
-    fn force_all<N>(&self, goods: N) -> core::result::Result<(), Recall<<Self::Flaws as Flaws>::Defect, Chain<LoneGoodIter<Self::Good>, N::IntoIter>>>
+    fn force_consumptions<C>(&self, consumer: &C) -> core::result::Result<(), Recall<<Self::Flaws as Flaws>::Defect, Self::Good>>
     where
         // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
         Self: Sized,
-        N: IntoIterator<Item = Self::Good>,
+        C: Consumer<Good = Self::Good>,
         <Self::Flaws as Flaws>::Defect: Flaws<
-            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency,
+            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
             Defect = <Self::Flaws as Flaws>::Defect,
         >;
 
-    fn produce(&self, good: Self::Good) -> core::result::Result<(), Recall<Self::Flaws, LoneGoodIter<Self::Good>>>;
+    fn produce(&self, good: Self::Good) -> core::result::Result<(), Recall<Self::Flaws, Self::Good>>;
 
-    fn produce_all<N>(&self, goods: N) -> core::result::Result<(), Recall<Self::Flaws, Chain<LoneGoodIter<Self::Good>, N::IntoIter>>>
+    fn produce_consumptions<C>(&self, consumer: &C) -> core::result::Result<(), Recall<Self::Flaws, Self::Good>>
     where
         // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
         Self: Sized,
-        N: IntoIterator<Item = Self::Good>;
+        C: Consumer<Good = Self::Good>;
 
-    fn recall_with_lone_good(&self, fault: Fault<Self::Flaws>, good: Self::Good) -> Recall<Self::Flaws, LoneGoodIter<Self::Good>>;
+    fn recall(&self, fault: Fault<Self::Flaws>, good: Self::Good) -> Recall<Self::Flaws, Self::Good>;
 }
 
 trait Consumer: Agent {
@@ -507,11 +508,77 @@ trait Consumer: Agent {
     fn demand(&self) -> core::result::Result<Self::Good, Failure<<Self::Flaws as Flaws>::Defect>>
     where
         <Self::Flaws as Flaws>::Defect: Flaws<
-            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency,
+            Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
             Defect = <Self::Flaws as Flaws>::Defect,
         >;
+}
 
-    fn goods(&self) -> Goods<'_, Self>
-    where
-        Self: Sized;
+mod channel {
+    struct WithdrawnDemand;
+
+    impl core::clone::Clone for WithdrawnDemand {}
+
+    impl core::marker::Copy for WithdrawnDemand {}
+
+    impl core::fmt::Debug for WithdrawnDemand {}
+
+    impl core::default::Default for WithdrawnDemand {}
+
+    impl core::fmt::Display for WithdrawnDemand {}
+
+    impl Flaws for WithdrawnDemand {
+        type Insufficiency = Flawless;
+        type Defect = Self;
+    }
+
+    struct WithdrawnSupply;
+
+    impl core::clone::Clone for WithdrawnSupply {}
+
+    impl core::marker::Copy for WithdrawnSupply {}
+
+    impl core::fmt::Debug for WithdrawnSupply {}
+
+    impl core::default::Default for WithdrawnSupply {}
+
+    impl core::fmt::Display for WithdrawnSupply {}
+
+    impl Flaws for WithdrawnSupply {
+        type Insufficiency = Flawless;
+        type Defect = Self;
+    }
+
+    trait InfiniteChannel<G> {
+        type Producer: Producer<Good = G, Flaws = WithdrawnDemand>;
+        type Consumer: Consumer<Good = G, Flaws = ConsumptionFlaws<WithdrawnSupply>>;
+        type Args;
+
+        fn establish(args: Self::Args) -> (Self::Producer, Self::Consumer);
+    }
+
+    trait FiniteChannel<G> {
+        type Producer: Producer<Good = G, Flaws = ProductionFlaws<WithdrawnDemand>>;
+        type Consumer: Consumer<Good = G, Flaws = ConsumptionFlaws<WithdrawnSupply>>;
+        type Args;
+
+        fn establish(args: Self::Args, size: usize) -> (Self::Producer, Self::Consumer);
+    }
+}
+
+mod queue {
+    trait InfiniteQueue<G>:
+        Consumer<Good = G, Flaws = EmptyStock> + Producer<Good = G, Flaws = Flawless>
+    {
+        type Args;
+
+        fn allocate(args: Self::Args) -> Self;
+    }
+
+    trait FiniteQueue<G>:
+        Consumer<Good = G, Flaws = EmptyStock> + Producer<Good = G, Flaws = FullStock>
+    {
+        type Args;
+
+        fn allocate(args: Self::Args, size: usize) -> Self;
+    }
 }
