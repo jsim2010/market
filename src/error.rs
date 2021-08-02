@@ -486,7 +486,7 @@ where
     F::Defect: TryFrom<W::Defect>,
 {
     /// Converts `self` into a `G`.
-    pub(crate) fn into_good(self) -> G {
+    pub fn into_good(self) -> G {
         self.good
     }
 }
@@ -556,7 +556,7 @@ impl Flaws for FullStock {
 }
 
 /// The insufficiency thrown when a [`Consumer`] attempts to consume from a market that has no goods available.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[non_exhaustive]
 pub struct EmptyStock;
 

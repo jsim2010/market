@@ -25,20 +25,13 @@ use {
 };
 
 /// Characterizes an agent that interacts with a market.
+// Agent does not define Flaws type because an Agent that implements both Producer and Consumer (such as a queue) may have different Flaws for each trait.
 pub trait Agent {
     /// Specifies the good that is stored in the market.
     type Good;
 
     /// Returns a [`String`] that identifies `self`.
     fn name(&self) -> String;
-
-    /// Returns the [`Failure`] thrown by `self` when `fault` is caught.
-    fn failure<F>(&self, fault: Fault<F>) -> Failure<F>
-    where
-        F: Flaws,
-    {
-        Failure::new(fault, self.name())
-    }
 }
 
 /// Characterizes an agent that stores goods into a market.
@@ -52,7 +45,7 @@ pub trait Producer: Agent {
         fault: Fault<Self::Flaws>,
         good: Self::Good,
     ) -> Recall<Self::Flaws, Self::Good> {
-        Recall::new(self.failure(fault), good)
+        Recall::new(Failure::new(fault, self.name()), good)
     }
 
     /// Stores `good` into the market without blocking.
@@ -131,6 +124,11 @@ pub trait Consumer: Agent {
     /// Specifies the [`Flaws`] thrown when a consumption fails.
     type Flaws: Flaws;
 
+    /// Returns the [`Failure`] thrown by `self` when `fault` is caught.
+    fn failure(&self, fault: Fault<Self::Flaws>) -> Failure<Self::Flaws> {
+        Failure::new(fault, self.name())
+    }
+
     /// Retrieves the next good from the market without blocking.
     ///
     /// # Errors
@@ -188,6 +186,10 @@ pub mod channel {
         }
     }
 
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "unstable-doc-cfg", doc(cfg(feature = "std")))]
+    impl std::error::Error for WithdrawnDemand {}
+
     impl Flaws for WithdrawnDemand {
         type Insufficiency = Flawless;
         type Defect = Self;
@@ -205,6 +207,10 @@ pub mod channel {
         }
     }
 
+    #[cfg(feature = "std")]
+    #[cfg_attr(feature = "unstable-doc-cfg", doc(cfg(feature = "std")))]
+    impl std::error::Error for WithdrawnSupply {}
+
     impl Flaws for WithdrawnSupply {
         type Insufficiency = Flawless;
         type Defect = Self;
@@ -216,11 +222,11 @@ pub mod channel {
         type Producer: Producer<Good = G, Flaws = WithdrawnDemand>;
         /// Specifies the [`Consumer`].
         type Consumer: Consumer<Good = G, Flaws = ConsumptionFlaws<WithdrawnSupply>>;
-        /// Specifies the arguments used for creating the channel.
-        type Args;
 
         /// Creates the [`Producer`] and [`Consumer`] connected to an infinite channel.
-        fn establish(args: Self::Args) -> (Self::Producer, Self::Consumer);
+        fn establish<S>(name_str: &S) -> (Self::Producer, Self::Consumer)
+        where
+            S: AsRef<str> + ?Sized;
     }
 
     /// Characterizes a channel with a limited capacity.
@@ -229,11 +235,11 @@ pub mod channel {
         type Producer: Producer<Good = G, Flaws = ProductionFlaws<WithdrawnDemand>>;
         /// Specifies the [`Consumer`].
         type Consumer: Consumer<Good = G, Flaws = ConsumptionFlaws<WithdrawnSupply>>;
-        /// Specifies the arguments used for creating the channel.
-        type Args;
 
         /// Creates the [`Producer`] and [`Consumer`] connected to a channel with capacity of `size`.
-        fn establish(args: Self::Args, size: usize) -> (Self::Producer, Self::Consumer);
+        fn establish<S>(name_str: &S, size: usize) -> (Self::Producer, Self::Consumer)
+        where
+            S: AsRef<str> + ?Sized;
     }
 }
 
@@ -247,21 +253,19 @@ pub mod queue {
     pub trait InfiniteQueue<G>:
         Consumer<Good = G, Flaws = EmptyStock> + Producer<Good = G, Flaws = Flawless>
     {
-        /// Specifies the arguments used for creating the queue.
-        type Args;
-
         /// Creates a queue with infinite size.
-        fn allocate(args: Self::Args) -> Self;
+        fn allocate<S>(name_str: &S) -> Self
+        where
+            S: AsRef<str> + ?Sized;
     }
 
     /// Characterizes a queue with a size.
     pub trait FiniteQueue<G>:
         Consumer<Good = G, Flaws = EmptyStock> + Producer<Good = G, Flaws = FullStock>
     {
-        /// Specifies the arguments used for creating the queue.
-        type Args;
-
         /// Creates a queue with finite size.
-        fn allocate(args: Self::Args, size: usize) -> Self;
+        fn allocate<S>(name_str: &S, size: usize) -> Self
+        where
+            S: AsRef<str> + ?Sized;
     }
 }

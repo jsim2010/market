@@ -3,8 +3,43 @@ use {
     fehler::{throw, throws},
     market::*,
     never::Never,
-    std::sync::atomic::{AtomicU8, Ordering},
+    std::{
+        collections::VecDeque,
+        sync::atomic::{AtomicU8, Ordering},
+    },
 };
+
+struct U8Consumer {
+    goods: RefCell<VecDeque<u8>>,
+}
+
+impl Agent for U8Consumer {
+    type Good = u8;
+
+    fn name(&self) -> String {
+        String::from("U8Consumer")
+    }
+}
+
+impl Consumer for U8Consumer {
+    type Flaws = ConsumptionFlaws<EmptyStock>;
+
+    #[throws(Failure<Self::Flaws>)]
+    fn consume(&self) -> Self::Good {
+        self.goods
+            .borrow_mut()
+            .pop_front()
+            .ok_or(self.failure(Fault::Defect(EmptyStock::default())))?
+    }
+}
+
+impl From<Vec<u8>> for U8Consumer {
+    fn from(goods: Vec<u8>) -> Self {
+        Self {
+            goods: RefCell::new(goods.into()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct MockDefect;
@@ -15,27 +50,27 @@ impl Flaws for MockDefect {
 }
 
 #[derive(Default)]
-struct MockProducer {
+struct U8Producer {
     goods: RefCell<Vec<u8>>,
     fail_on_call: Option<(u8, Fault<ProductionFlaws<MockDefect>>)>,
     calls: AtomicU8,
 }
 
-impl MockProducer {
+impl U8Producer {
     fn fail_on_produce_call(&mut self, call: u8, fault: Fault<ProductionFlaws<MockDefect>>) {
         self.fail_on_call = Some((call, fault));
     }
 }
 
-impl Agent for MockProducer {
+impl Agent for U8Producer {
     type Good = u8;
 
     fn name(&self) -> String {
-        String::from("MockProducer")
+        String::from("U8Producer")
     }
 }
 
-impl Producer for MockProducer {
+impl Producer for U8Producer {
     type Flaws = ProductionFlaws<MockDefect>;
 
     #[throws(Recall<Self::Flaws, Self::Good>)]
@@ -50,79 +85,62 @@ impl Producer for MockProducer {
     }
 }
 
-// TODO: Figure out way to test Recall.
-fn cmp_recall<F: Flaws, I: Iterator<Item = u8> + Clone + Debug>(
-    recall: Recall<F, I>,
-    goods: Vec<u8>,
-    fault: Fault<F>,
-) where
-    F::Insufficiency: Debug + PartialEq,
-    F::Defect: Debug + PartialEq,
-{
-    drop(recall);
-    drop(goods);
-    drop(fault);
-    //assert_eq!(
-    //    recall,
-    //    Recall::new(Failure::new(fault, String::new()), goods)
-    //)
+#[test]
+fn produce_consumptions_success() {
+    let producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+
+    assert_eq!(producer.produce_consumptions(&goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]))
 }
 
-//#[test]
-//fn produce_all_success() {
-//    let producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    assert_eq!(producer.produce_all(goods).unwrap(), ());
-//    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]))
-//}
-//
-//#[test]
-//fn produce_all_insufficient_stock() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
-//
-//    cmp_recall(
-//        producer.produce_all(goods).unwrap_err(),
-//        vec![0, 1, 2],
-//        Fault::Insufficiency(FullStock::default()),
-//    );
-//    assert_eq!(producer.goods, RefCell::new(vec![]));
-//}
-//
-//#[test]
-//fn produce_all_fault() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//    let fault = Fault::Defect(MockDefect);
-//
-//    producer.fail_on_produce_call(0, fault.clone());
-//
-//    cmp_recall(
-//        producer.produce_all(goods).unwrap_err(),
-//        vec![0, 1, 2],
-//        fault,
-//    );
-//    assert_eq!(producer.goods, RefCell::new(vec![]));
-//}
-//
-//#[test]
-//fn produce_all_fault_middle() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//    let fault = Fault::Defect(MockDefect);
-//
-//    producer.fail_on_produce_call(1, fault.clone());
-//
-//    cmp_recall(producer.produce_all(goods).unwrap_err(), vec![1, 2], fault);
-//    assert_eq!(producer.goods, RefCell::new(vec![0]));
-//}
+#[test]
+fn produce_consumptions_insufficient_stock() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+
+    producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
+
+    assert_eq!(
+        producer.produce_consumptions(&goods).unwrap_err(),
+        producer.recall(Fault::Insufficiency(FullStock::default()), 0)
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![]));
+}
+
+#[test]
+fn produce_consumptions_fault() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+    let fault = Fault::Defect(MockDefect);
+
+    producer.fail_on_produce_call(0, fault.clone());
+
+    assert_eq!(
+        producer.produce_consumptions(&goods).unwrap_err(),
+        producer.recall(fault, 0)
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![]));
+}
+
+#[test]
+fn produce_consumptions_fault_middle() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+    let fault = Fault::Defect(MockDefect);
+
+    producer.fail_on_produce_call(1, fault.clone());
+
+    assert_eq!(
+        producer.produce_consumptions(&goods).unwrap_err(),
+        producer.recall(fault, 1)
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![0]));
+}
 
 #[test]
 fn force_success() {
-    let producer = MockProducer::default();
+    let producer = U8Producer::default();
 
     assert_eq!(producer.force(0).unwrap(), ());
     assert_eq!(producer.goods, RefCell::new(vec![0]));
@@ -130,7 +148,7 @@ fn force_success() {
 
 #[test]
 fn force_insufficient_stock() {
-    let mut producer = MockProducer::default();
+    let mut producer = U8Producer::default();
 
     producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
 
@@ -138,76 +156,76 @@ fn force_insufficient_stock() {
     assert_eq!(producer.goods, RefCell::new(vec![0]));
 }
 
-// TODO: Figure out way to test Recall.
 #[test]
 fn force_fault() {
-    //let mut producer = MockProducer::default();
+    let mut producer = U8Producer::default();
+    let fault = Fault::Defect(MockDefect);
 
-    //producer.fail_on_produce_call(0, Fault::Defect(MockDefect));
+    producer.fail_on_produce_call(0, fault.clone());
 
-    //assert_eq!(
-    //    producer.force(0).unwrap_err(),
-    //    Recall::new(Failure::new(Fault::Defect(MockDefect), String::new()), iter::once(0))
-    //);
+    assert_eq!(
+        producer.force(0).unwrap_err(),
+        producer.recall(fault, 0).try_blame().unwrap()
+    );
 }
 
-//#[test]
-//fn force_all_success() {
-//    let producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    assert_eq!(producer.force_all(goods).unwrap(), ());
-//    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-//}
-//
-//#[test]
-//fn force_all_insufficient_stock() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
-//
-//    assert_eq!(producer.force_all(goods).unwrap(), ());
-//    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-//}
-//
-//#[test]
-//fn force_all_insufficient_stock_middle() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    producer.fail_on_produce_call(1, Fault::Insufficiency(FullStock::default()));
-//
-//    assert_eq!(producer.force_all(goods).unwrap(), ());
-//    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-//}
-//
-//#[test]
-//fn force_all_fault() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    producer.fail_on_produce_call(0, Fault::Defect(MockDefect));
-//
-//    cmp_recall(
-//        producer.force_all(goods).unwrap_err(),
-//        vec![0, 1, 2],
-//        Fault::Defect(MockDefect),
-//    );
-//    assert_eq!(producer.goods, RefCell::new(vec![]));
-//}
-//
-//#[test]
-//fn force_all_fault_middle() {
-//    let mut producer = MockProducer::default();
-//    let goods = vec![0, 1, 2];
-//
-//    producer.fail_on_produce_call(1, Fault::Defect(MockDefect));
-//
-//    cmp_recall(
-//        producer.force_all(goods).unwrap_err(),
-//        vec![1, 2],
-//        Fault::Defect(MockDefect),
-//    );
-//    assert_eq!(producer.goods, RefCell::new(vec![0]));
-//}
+#[test]
+fn force_consumptions_success() {
+    let producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+
+    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_consumptions_insufficient_stock() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+
+    producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
+
+    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_consumptions_insufficient_stock_middle() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+
+    producer.fail_on_produce_call(1, Fault::Insufficiency(FullStock::default()));
+
+    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
+    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
+}
+
+#[test]
+fn force_consumptions_fault() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+    let fault = Fault::Defect(MockDefect);
+
+    producer.fail_on_produce_call(0, fault.clone());
+
+    assert_eq!(
+        producer.force_consumptions(&goods).unwrap_err(),
+        producer.recall(fault, 0).try_blame().unwrap()
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![]));
+}
+
+#[test]
+fn force_consumptions_fault_middle() {
+    let mut producer = U8Producer::default();
+    let goods = U8Consumer::from(vec![0, 1, 2]);
+    let fault = Fault::Defect(MockDefect);
+
+    producer.fail_on_produce_call(1, fault.clone());
+
+    assert_eq!(
+        producer.force_consumptions(&goods).unwrap_err(),
+        producer.recall(fault, 1).try_blame().unwrap()
+    );
+    assert_eq!(producer.goods, RefCell::new(vec![0]));
+}
