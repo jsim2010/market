@@ -64,14 +64,16 @@ fn demand_insufficient_stock() {
     assert_eq!(consumer.demand(), Ok(0));
 }
 
-// TODO: Figure out way to test the failure.
 #[test]
 fn demand_fault() {
-    //let consumer = MockConsumer::new(vec![Err(Fault::Defect(MockDefect)), Ok(0)]);
+    let consumer = MockConsumer::new(vec![Err(Fault::Defect(MockDefect)), Ok(0)]);
 
-    //assert_eq!(
-    //    consumer.demand(),
-    //    Err(consumer.failure(Fault::Defect(MockDefect)))
-    //);
-    //assert_eq!(consumer.demand(), Ok(0));
+    assert_eq!(
+        consumer.demand(),
+        Err(consumer
+            .failure(Fault::Defect(MockDefect))
+            .try_blame()
+            .unwrap())
+    );
+    assert_eq!(consumer.demand(), Ok(0));
 }
