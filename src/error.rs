@@ -49,22 +49,42 @@ pub trait TryBlame<T> {
 
 /// The cause of an [`Agent`] failing to successfully complete an action upon a market.
 #[non_exhaustive]
-pub enum Fault<F: Flaws> {
+pub enum Fault<F>
+where
+    F: Flaws,
+{
     /// The action failed due to an insufficiency.
     Insufficiency(F::Insufficiency),
     /// The action failed due to a defect.
     Defect(F::Defect),
 }
 
-impl<F: Flaws> Fault<F> {
+impl<F> Fault<F>
+where
+    F: Flaws,
+{
     /// Returns if `self` is a defect.
     fn is_defect(&self) -> bool {
         matches!(*self, Self::Defect(_))
     }
+
+    /// If `self` is a defect, converts the defect into `W::Defect`; otherwise returns `self`.
+    fn map_defect<M, W>(self, mut m: M) -> Fault<W>
+    where
+        M: FnMut(F::Defect) -> W::Defect,
+        W: Flaws<Insufficiency = F::Insufficiency>,
+    {
+        match self {
+            Self::Insufficiency(insufficiency) => Fault::Insufficiency(insufficiency),
+            Self::Defect(defect) => Fault::Defect(m(defect)),
+        }
+    }
 }
 
-impl<F: Flaws, W: Flaws> Blame<Fault<W>> for Fault<F>
+impl<F, W> Blame<Fault<W>> for Fault<F>
 where
+    F: Flaws,
+    W: Flaws,
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
@@ -189,6 +209,18 @@ impl<F: Flaws> Failure<F> {
     /// Returns if `self` was caused by a defect.
     pub fn is_defect(&self) -> bool {
         self.fault.is_defect()
+    }
+
+    /// If `self` is a defect, converts the defect into `W::Defect`; otherwise returns `self`.
+    pub fn map_defect<M, W>(self, m: M) -> Failure<W>
+    where
+        M: FnMut(F::Defect) -> W::Defect,
+        W: Flaws<Insufficiency = F::Insufficiency>,
+    {
+        Failure {
+            agent_name: self.agent_name,
+            fault: self.fault.map_defect(m),
+        }
     }
 }
 
@@ -354,6 +386,90 @@ where
                 error,
                 good: self.good,
             }),
+        }
+    }
+}
+
+/// The error thrown when a chain from a [`Consumer`] to a [`Producer`] fails to produce a good.
+#[non_exhaustive]
+pub enum Blockage<C, P, G>
+where
+    C: Flaws,
+    P: Flaws,
+{
+    /// The action failed due to a failure during consumption.
+    Consumption(Failure<C>),
+    /// The action failed due to a failure during production.
+    Production(Recall<P, G>),
+}
+
+impl<C, P, G> Debug for Blockage<C, P, G>
+where
+    C: Flaws,
+    C::Insufficiency: Debug,
+    C::Defect: Debug,
+    P: Flaws,
+    P::Insufficiency: Debug,
+    P::Defect: Debug,
+    G: Debug,
+{
+    /// Writes the default debug format for `self`.
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Consumption(ref failure) => {
+                write!(f, "Blockage::Consumption({:?})", failure)
+            }
+            Self::Production(ref recall) => write!(f, "Blockage::Production({:?})", recall),
+        }
+    }
+}
+
+impl<C, P, G> From<Failure<C>> for Blockage<C, P, G>
+where
+    C: Flaws,
+    P: Flaws,
+{
+    fn from(failure: Failure<C>) -> Self {
+        Self::Consumption(failure)
+    }
+}
+
+impl<C, P, G> From<Recall<P, G>> for Blockage<C, P, G>
+where
+    C: Flaws,
+    P: Flaws,
+{
+    fn from(recall: Recall<P, G>) -> Self {
+        Self::Production(recall)
+    }
+}
+
+impl<C, P, G> PartialEq for Blockage<C, P, G>
+where
+    C: Flaws,
+    C::Insufficiency: PartialEq,
+    C::Defect: PartialEq,
+    P: Flaws,
+    P::Insufficiency: PartialEq,
+    P::Defect: PartialEq,
+    G: PartialEq,
+{
+    fn eq(&self, other: &Self) -> bool {
+        match *self {
+            Self::Consumption(ref my_failure) => {
+                if let Blockage::Consumption(ref their_failure) = *other {
+                    my_failure == their_failure
+                } else {
+                    false
+                }
+            }
+            Self::Production(ref my_recall) => {
+                if let Blockage::Production(ref their_recall) = *other {
+                    my_recall == their_recall
+                } else {
+                    false
+                }
+            }
         }
     }
 }

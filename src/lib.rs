@@ -13,7 +13,7 @@ extern crate std;
 mod error;
 
 pub use error::{
-    Blame, ConsumptionFlaws, EmptyStock, Failure, FailureConversionError, Fault,
+    Blame, Blockage, ConsumptionFlaws, EmptyStock, Failure, FailureConversionError, Fault,
     FaultConversionError, Flawless, Flaws, FullStock, ProductionFlaws, Recall,
     RecallConversionError, TryBlame,
 };
@@ -55,20 +55,47 @@ pub trait Producer: Agent {
     /// If `produce` fails to store `good` into the market, it shall throw a [`Recall`] containing the [`Fault`] and `good`.
     fn produce(&self, good: Self::Good) -> Result<(), Recall<Self::Flaws, Self::Good>>;
 
-    /// Retrieves and stores goods from `consumer` into the market without blocking.
+    /// Stores each good from the [`Iterator`] `goods` into the market without blocking.
     ///
     /// # Errors
     ///
-    /// If the production of a good fails, `produce_consumptions` shall throw a [`Recall`] with all goods  in `goods` that were not produced.
+    /// If the production of a good fails, shall throw a [`Recall`] and `goods` shall contain all goods whose production was not attempted.
     #[throws(Recall<Self::Flaws, Self::Good>)]
-    fn produce_consumptions<C>(&self, consumer: &C)
+    fn produce_all<I>(&self, goods: &mut I)
+    where
+        // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
+        Self: Sized,
+        I: Iterator<Item = Self::Good>,
+    {
+        for good in goods {
+            self.produce(good)?;
+        }
+    }
+
+    /// Retrieves each good from the [`Consumer`] `consumer` and stores it into the market without blocking.
+    ///
+    /// # Errors
+    ///
+    /// If the consumption or production of a good fails, except in the case where consumption fails due to an insufficiency after at least one successful consumption, `produce_goods` shall throw a [`Blockage`] and `consumer` shall contain all goods whose production was not attempted.
+    #[throws(Blockage<C::Flaws, Self::Flaws, Self::Good>)]
+    fn produce_goods<C>(&self, consumer: &C)
     where
         // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
         Self: Sized,
         C: Consumer<Good = Self::Good>,
     {
-        while let Ok(good) = consumer.consume() {
-            self.produce(good)?;
+        // Throw any consumer error on the first attempt; after this only throw defects.
+        self.produce(consumer.consume()?)?;
+
+        let failure = loop {
+            match consumer.consume() {
+                Ok(good) => self.produce(good)?,
+                Err(failure) => break failure,
+            }
+        };
+
+        if failure.is_defect() {
+            throw!(failure);
         }
     }
 
@@ -95,24 +122,45 @@ pub trait Producer: Agent {
         }
     }
 
-    /// Retrieves and stores goods from `consumer` into the market, blocking storage until stock is available.
+    /// Stores each good from the [`Iterator`] `goods` into the market, blocking until stock is available.
     ///
     /// # Errors
     ///
-    /// If the production of a good fails due to a defect, `force_consumptions` shall throw a [`Recall`] with all goods  in `goods` that were not produced.
+    /// If the production of a good fails, `force_all` shall throw a [`Recall`] and `goods` shall contain all goods whose production was not attempted.
     #[throws(Recall<<Self::Flaws as Flaws>::Defect, Self::Good>)]
-    fn force_consumptions<C>(&self, consumer: &C)
+    fn force_all<I>(&self, goods: &mut I)
+    where
+        // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
+        Self: Sized,
+        I: Iterator<Item = Self::Good>,
+        <Self::Flaws as Flaws>::Defect: Flaws<Defect = <Self::Flaws as Flaws>::Defect>,
+        <<Self::Flaws as Flaws>::Defect as Flaws>::Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
+    {
+        for good in goods {
+            self.force(good)?;
+        }
+    }
+
+    /// Retrieves and stores goods from `consumer` into the market, blocking both until stock is sufficient for the respective action.
+    ///
+    /// # Errors
+    ///
+    /// If the consumption or production of a good fails due to a defect, `force_all` shall throw a [`Blockage`] and `consumer` shall contain all goods whose production was not attempted.
+    #[allow(unreachable_code)] // Issue with fehler (#53) which has been resolved but not released.
+    #[throws(Blockage<<C::Flaws as Flaws>::Defect, <Self::Flaws as Flaws>::Defect, Self::Good>)]
+    fn force_goods<C>(&self, consumer: &C)
     where
         // Required for Producer to be object safe: See https://doc.rust-lang.org/reference/items/traits.html#object-safety.
         Self: Sized,
         C: Consumer<Good = Self::Good>,
-        // Indicates that Self::Flaws::Defect implements Flaws with itself as the Defect.
+        <C::Flaws as Flaws>::Defect: Flaws<Defect = <C::Flaws as Flaws>::Defect>,
+        <<C::Flaws as Flaws>::Defect as Flaws>::Insufficiency: TryFrom<<C::Flaws as Flaws>::Insufficiency>,
         <Self::Flaws as Flaws>::Defect: Flaws<Defect = <Self::Flaws as Flaws>::Defect>,
         <<Self::Flaws as Flaws>::Defect as Flaws>::Insufficiency:
             TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
     {
-        while let Ok(good) = consumer.consume() {
-            self.force(good)?;
+        loop {
+            self.force(consumer.demand()?)?;
         }
     }
 }
