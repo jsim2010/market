@@ -25,7 +25,7 @@ use {
 
 /// Characterizes an agent that interacts with a market.
 // Agent does not define Flaws type because an Agent that implements both Producer and Consumer (such as a queue) may have different Flaws for each trait.
-pub trait Agent {
+pub trait Agent: Display {
     /// Specifies the good that is stored in the market.
     type Good;
 }
@@ -36,10 +36,11 @@ pub trait Producer: Agent {
     type Flaws: Flaws;
 
     /// Returns the [`Recall`] thrown by `self` when `fault` is caught while producing `good`.
-    fn recall(&self, fault: Fault<Self::Flaws>, good: Self::Good) -> Recall<Self::Flaws, Self::Good>
-    where
-        Self: Display,
-    {
+    fn recall(
+        &self,
+        fault: Fault<Self::Flaws>,
+        good: Self::Good,
+    ) -> Recall<Self::Flaws, Self::Good> {
         Recall::new(Failure::new(&self, fault), good)
     }
 
@@ -170,10 +171,7 @@ pub trait Consumer: Agent {
     type Flaws: Flaws;
 
     /// Returns the [`Failure`] thrown by `self` when `fault` is caught.
-    fn failure(&self, fault: Fault<Self::Flaws>) -> Failure<Self::Flaws>
-    where
-        Self: Display,
-    {
+    fn failure(&self, fault: Fault<Self::Flaws>) -> Failure<Self::Flaws> {
         Failure::new(&self, fault)
     }
 
