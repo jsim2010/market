@@ -1,5 +1,8 @@
 use {
-    core::{cell::RefCell, fmt::Debug},
+    core::{
+        cell::RefCell,
+        fmt::{self, Debug, Display, Formatter},
+    },
     fehler::{throw, throws},
     market::*,
     never::Never,
@@ -15,10 +18,6 @@ struct U8Consumer {
 
 impl Agent for U8Consumer {
     type Good = u8;
-
-    fn name(&self) -> String {
-        String::from("U8Consumer")
-    }
 }
 
 impl Consumer for U8Consumer {
@@ -30,6 +29,12 @@ impl Consumer for U8Consumer {
             .borrow_mut()
             .pop_front()
             .ok_or(self.failure(Fault::Insufficiency(EmptyStock::default())))?
+    }
+}
+
+impl Display for U8Consumer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "U8Consumer")
     }
 }
 
@@ -64,9 +69,11 @@ impl U8Producer {
 
 impl Agent for U8Producer {
     type Good = u8;
+}
 
-    fn name(&self) -> String {
-        String::from("U8Producer")
+impl Display for U8Producer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "U8Producer")
     }
 }
 
@@ -179,8 +186,8 @@ fn force_goods_fault() {
 
     assert_eq!(
         producer.force_goods(&goods).unwrap_err(),
-        Blockage::Production(producer.recall(fault, 0).try_blame().unwrap()
-    ));
+        Blockage::Production(producer.recall(fault, 0).try_blame().unwrap())
+    );
     assert_eq!(producer.goods, RefCell::new(vec![]));
 }
 
@@ -194,7 +201,7 @@ fn force_goods_fault_middle() {
 
     assert_eq!(
         producer.force_goods(&goods).unwrap_err(),
-        Blockage::Production(producer.recall(fault, 1).try_blame().unwrap()
-    ));
+        Blockage::Production(producer.recall(fault, 1).try_blame().unwrap())
+    );
     assert_eq!(producer.goods, RefCell::new(vec![0]));
 }

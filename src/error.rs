@@ -3,7 +3,7 @@
 use crate::{Agent, Consumer, Producer};
 
 use {
-    alloc::string::String,
+    alloc::string::{String, ToString},
     core::{
         convert::TryFrom,
         fmt::{self, Debug, Display, Formatter},
@@ -98,8 +98,9 @@ where
     }
 }
 
-impl<F: Flaws> Clone for Fault<F>
+impl<F> Clone for Fault<F>
 where
+    F: Flaws,
     F::Insufficiency: Clone,
     F::Defect: Clone,
 {
@@ -111,15 +112,17 @@ where
     }
 }
 
-impl<F: Flaws> Copy for Fault<F>
+impl<F> Copy for Fault<F>
 where
+    F: Flaws,
     F::Insufficiency: Copy,
     F::Defect: Copy,
 {
 }
 
-impl<F: Flaws> Debug for Fault<F>
+impl<F> Debug for Fault<F>
 where
+    F: Flaws,
     F::Insufficiency: Debug,
     F::Defect: Debug,
 {
@@ -133,8 +136,9 @@ where
     }
 }
 
-impl<F: Flaws> Display for Fault<F>
+impl<F> Display for Fault<F>
 where
+    F: Flaws,
     F::Insufficiency: Display,
     F::Defect: Display,
 {
@@ -146,8 +150,9 @@ where
     }
 }
 
-impl<F: Flaws> PartialEq for Fault<F>
+impl<F> PartialEq for Fault<F>
 where
+    F: Flaws,
     F::Insufficiency: PartialEq,
     F::Defect: PartialEq,
 {
@@ -171,8 +176,10 @@ where
     }
 }
 
-impl<F: Flaws, W: Flaws> TryBlame<Fault<W>> for Fault<F>
+impl<F, W> TryBlame<Fault<W>> for Fault<F>
 where
+    F: Flaws,
+    W: Flaws,
     W::Insufficiency: TryFrom<F::Insufficiency>,
     W::Defect: TryFrom<F::Defect>,
 {
@@ -194,16 +201,25 @@ where
 
 /// The error thrown when the action of an [`Agent`] fails.
 pub struct Failure<F: Flaws> {
-    /// The name of the [`Agent`].
-    agent_name: String,
+    /// The description of the [`Agent`].
+    agent_description: String,
     /// The cause of the failure.
     fault: Fault<F>,
 }
 
-impl<F: Flaws> Failure<F> {
-    /// Creates a new [`Failure`] with the `agent_name`and `fault` that caused the failure.
-    pub(crate) fn new(fault: Fault<F>, agent_name: String) -> Self {
-        Self { agent_name, fault }
+impl<F> Failure<F>
+where
+    F: Flaws,
+{
+    /// Creates a new [`Failure`] with the description of `agent`and `fault` that caused the failure.
+    pub(crate) fn new<A>(agent: &A, fault: Fault<F>) -> Self
+    where
+        A: Display,
+    {
+        Self {
+            agent_description: agent.to_string(),
+            fault,
+        }
     }
 
     /// Returns if `self` was caused by a defect.
@@ -218,19 +234,24 @@ impl<F: Flaws> Failure<F> {
         W: Flaws<Insufficiency = F::Insufficiency>,
     {
         Failure {
-            agent_name: self.agent_name,
+            agent_description: self.agent_description,
             fault: self.fault.map_defect(m),
         }
     }
 }
 
-impl<F: Flaws, W: Flaws> Blame<Failure<W>> for Failure<F>
+impl<F, W> Blame<Failure<W>> for Failure<F>
 where
+    F: Flaws,
+    W: Flaws,
     W::Insufficiency: From<F::Insufficiency>,
     W::Defect: From<F::Defect>,
 {
     fn blame(self) -> Failure<W> {
-        Failure::new(self.fault.blame(), self.agent_name)
+        Failure {
+            agent_description: self.agent_description,
+            fault: self.fault.blame(),
+        }
     }
 }
 
@@ -242,7 +263,7 @@ where
     /// Writes the default debug format for `self`.
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Failure")
-            .field("agent_name", &self.agent_name)
+            .field("agent_description", &self.agent_description)
             .field("fault", &self.fault)
             .finish()
     }
@@ -255,7 +276,7 @@ where
 {
     /// Writes "{name}: {fault}".
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.agent_name, self.fault)
+        write!(f, "{}: {}", self.agent_description, self.fault)
     }
 }
 
@@ -274,7 +295,7 @@ where
     F::Defect: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.agent_name == other.agent_name && self.fault == other.fault
+        self.agent_description == other.agent_description && self.fault == other.fault
     }
 }
 
@@ -288,10 +309,13 @@ where
     #[throws(Self::Error)]
     fn try_blame(self) -> Failure<W> {
         match self.fault.try_blame() {
-            Ok(fault) => Failure::new(fault, self.agent_name),
+            Ok(fault) => Failure {
+                agent_description: self.agent_description,
+                fault,
+            },
             Err(error) => throw!(FailureConversionError {
                 error,
-                agent_name: self.agent_name
+                agent_description: self.agent_description
             }),
         }
     }
@@ -543,7 +567,7 @@ where
     /// The error that caused the failure.
     error: FaultConversionError<F, W>,
     /// The name of the [`Agent`] that experienced the failure.
-    agent_name: String,
+    agent_description: String,
 }
 
 impl<F: Flaws, W: Flaws> Debug for FailureConversionError<F, W>
@@ -556,7 +580,7 @@ where
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("FailureConversionError")
             .field("error", &self.error)
-            .field("agent_name", &self.agent_name)
+            .field("agent_description", &self.agent_description)
             .finish()
     }
 }
@@ -569,7 +593,7 @@ where
     <F::Defect as TryFrom<W::Defect>>::Error: Display,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "in `{}`: {}", self.agent_name, self.error)
+        write!(f, "in `{}`: {}", self.agent_description, self.error)
     }
 }
 

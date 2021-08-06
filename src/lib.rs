@@ -19,8 +19,7 @@ pub use error::{
 };
 
 use {
-    alloc::string::String,
-    core::convert::TryFrom,
+    core::{convert::TryFrom, fmt::Display},
     fehler::{throw, throws},
 };
 
@@ -29,9 +28,6 @@ use {
 pub trait Agent {
     /// Specifies the good that is stored in the market.
     type Good;
-
-    /// Returns a [`String`] that identifies `self`.
-    fn name(&self) -> String;
 }
 
 /// Characterizes an agent that stores goods into a market.
@@ -40,12 +36,11 @@ pub trait Producer: Agent {
     type Flaws: Flaws;
 
     /// Returns the [`Recall`] thrown by `self` when `fault` is caught while producing `good`.
-    fn recall(
-        &self,
-        fault: Fault<Self::Flaws>,
-        good: Self::Good,
-    ) -> Recall<Self::Flaws, Self::Good> {
-        Recall::new(Failure::new(fault, self.name()), good)
+    fn recall(&self, fault: Fault<Self::Flaws>, good: Self::Good) -> Recall<Self::Flaws, Self::Good>
+    where
+        Self: Display,
+    {
+        Recall::new(Failure::new(&self, fault), good)
     }
 
     /// Stores `good` into the market without blocking.
@@ -134,7 +129,8 @@ pub trait Producer: Agent {
         Self: Sized,
         I: Iterator<Item = Self::Good>,
         <Self::Flaws as Flaws>::Defect: Flaws<Defect = <Self::Flaws as Flaws>::Defect>,
-        <<Self::Flaws as Flaws>::Defect as Flaws>::Insufficiency: TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
+        <<Self::Flaws as Flaws>::Defect as Flaws>::Insufficiency:
+            TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
     {
         for good in goods {
             self.force(good)?;
@@ -154,7 +150,8 @@ pub trait Producer: Agent {
         Self: Sized,
         C: Consumer<Good = Self::Good>,
         <C::Flaws as Flaws>::Defect: Flaws<Defect = <C::Flaws as Flaws>::Defect>,
-        <<C::Flaws as Flaws>::Defect as Flaws>::Insufficiency: TryFrom<<C::Flaws as Flaws>::Insufficiency>,
+        <<C::Flaws as Flaws>::Defect as Flaws>::Insufficiency:
+            TryFrom<<C::Flaws as Flaws>::Insufficiency>,
         <Self::Flaws as Flaws>::Defect: Flaws<Defect = <Self::Flaws as Flaws>::Defect>,
         <<Self::Flaws as Flaws>::Defect as Flaws>::Insufficiency:
             TryFrom<<Self::Flaws as Flaws>::Insufficiency>,
@@ -173,8 +170,11 @@ pub trait Consumer: Agent {
     type Flaws: Flaws;
 
     /// Returns the [`Failure`] thrown by `self` when `fault` is caught.
-    fn failure(&self, fault: Fault<Self::Flaws>) -> Failure<Self::Flaws> {
-        Failure::new(fault, self.name())
+    fn failure(&self, fault: Fault<Self::Flaws>) -> Failure<Self::Flaws>
+    where
+        Self: Display,
+    {
+        Failure::new(&self, fault)
     }
 
     /// Retrieves the next good from the market without blocking.
