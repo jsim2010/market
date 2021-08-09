@@ -1,4 +1,13 @@
-use {core::cell::RefCell, fehler::throws, market::*, never::Never, std::collections::VecDeque};
+use {
+    core::{
+        cell::RefCell,
+        fmt::{self, Display, Formatter},
+    },
+    fehler::throws,
+    market::*,
+    never::Never,
+    std::collections::VecDeque,
+};
 
 struct MockConsumer {
     goods: RefCell<VecDeque<Result<u8, Fault<ConsumptionFlaws<MockDefect>>>>>,
@@ -14,10 +23,6 @@ impl MockConsumer {
 
 impl Agent for MockConsumer {
     type Good = u8;
-
-    fn name(&self) -> String {
-        String::from("MockConsumer")
-    }
 }
 
 impl Consumer for MockConsumer {
@@ -30,6 +35,12 @@ impl Consumer for MockConsumer {
             .pop_front()
             .map(|x| x.map_err(|fault| self.failure(fault)))
             .ok_or(self.failure(Fault::Insufficiency(EmptyStock::default())))??
+    }
+}
+
+impl Display for MockConsumer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "MockConsumer")
     }
 }
 

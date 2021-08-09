@@ -1,5 +1,8 @@
 use {
-    core::{cell::RefCell, fmt::Debug},
+    core::{
+        cell::RefCell,
+        fmt::{self, Debug, Display, Formatter},
+    },
     fehler::{throw, throws},
     market::*,
     never::Never,
@@ -15,21 +18,23 @@ struct U8Consumer {
 
 impl Agent for U8Consumer {
     type Good = u8;
-
-    fn name(&self) -> String {
-        String::from("U8Consumer")
-    }
 }
 
 impl Consumer for U8Consumer {
-    type Flaws = ConsumptionFlaws<EmptyStock>;
+    type Flaws = ConsumptionFlaws<Never>;
 
     #[throws(Failure<Self::Flaws>)]
     fn consume(&self) -> Self::Good {
         self.goods
             .borrow_mut()
             .pop_front()
-            .ok_or(self.failure(Fault::Defect(EmptyStock::default())))?
+            .ok_or(self.failure(Fault::Insufficiency(EmptyStock::default())))?
+    }
+}
+
+impl Display for U8Consumer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "U8Consumer")
     }
 }
 
@@ -64,9 +69,11 @@ impl U8Producer {
 
 impl Agent for U8Producer {
     type Good = u8;
+}
 
-    fn name(&self) -> String {
-        String::from("U8Producer")
+impl Display for U8Producer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "U8Producer")
     }
 }
 
@@ -86,30 +93,30 @@ impl Producer for U8Producer {
 }
 
 #[test]
-fn produce_consumptions_success() {
+fn produce_goods_success() {
     let producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
 
-    assert_eq!(producer.produce_consumptions(&goods).unwrap(), ());
+    assert_eq!(producer.produce_goods(&goods).unwrap(), ());
     assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]))
 }
 
 #[test]
-fn produce_consumptions_insufficient_stock() {
+fn produce_goods_insufficient_stock() {
     let mut producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
 
     producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
 
     assert_eq!(
-        producer.produce_consumptions(&goods).unwrap_err(),
-        producer.recall(Fault::Insufficiency(FullStock::default()), 0)
+        producer.produce_goods(&goods).unwrap_err(),
+        Blockage::Production(producer.recall(Fault::Insufficiency(FullStock::default()), 0))
     );
     assert_eq!(producer.goods, RefCell::new(vec![]));
 }
 
 #[test]
-fn produce_consumptions_fault() {
+fn produce_goods_fault() {
     let mut producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
     let fault = Fault::Defect(MockDefect);
@@ -117,14 +124,14 @@ fn produce_consumptions_fault() {
     producer.fail_on_produce_call(0, fault.clone());
 
     assert_eq!(
-        producer.produce_consumptions(&goods).unwrap_err(),
-        producer.recall(fault, 0)
+        producer.produce_goods(&goods).unwrap_err(),
+        Blockage::Production(producer.recall(fault, 0))
     );
     assert_eq!(producer.goods, RefCell::new(vec![]));
 }
 
 #[test]
-fn produce_consumptions_fault_middle() {
+fn produce_goods_fault_middle() {
     let mut producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
     let fault = Fault::Defect(MockDefect);
@@ -132,8 +139,8 @@ fn produce_consumptions_fault_middle() {
     producer.fail_on_produce_call(1, fault.clone());
 
     assert_eq!(
-        producer.produce_consumptions(&goods).unwrap_err(),
-        producer.recall(fault, 1)
+        producer.produce_goods(&goods).unwrap_err(),
+        Blockage::Production(producer.recall(fault, 1))
     );
     assert_eq!(producer.goods, RefCell::new(vec![0]));
 }
@@ -170,38 +177,7 @@ fn force_fault() {
 }
 
 #[test]
-fn force_consumptions_success() {
-    let producer = U8Producer::default();
-    let goods = U8Consumer::from(vec![0, 1, 2]);
-
-    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
-    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-}
-
-#[test]
-fn force_consumptions_insufficient_stock() {
-    let mut producer = U8Producer::default();
-    let goods = U8Consumer::from(vec![0, 1, 2]);
-
-    producer.fail_on_produce_call(0, Fault::Insufficiency(FullStock::default()));
-
-    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
-    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-}
-
-#[test]
-fn force_consumptions_insufficient_stock_middle() {
-    let mut producer = U8Producer::default();
-    let goods = U8Consumer::from(vec![0, 1, 2]);
-
-    producer.fail_on_produce_call(1, Fault::Insufficiency(FullStock::default()));
-
-    assert_eq!(producer.force_consumptions(&goods).unwrap(), ());
-    assert_eq!(producer.goods, RefCell::new(vec![0, 1, 2]));
-}
-
-#[test]
-fn force_consumptions_fault() {
+fn force_goods_fault() {
     let mut producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
     let fault = Fault::Defect(MockDefect);
@@ -209,14 +185,14 @@ fn force_consumptions_fault() {
     producer.fail_on_produce_call(0, fault.clone());
 
     assert_eq!(
-        producer.force_consumptions(&goods).unwrap_err(),
-        producer.recall(fault, 0).try_blame().unwrap()
+        producer.force_goods(&goods).unwrap_err(),
+        Blockage::Production(producer.recall(fault, 0).try_blame().unwrap())
     );
     assert_eq!(producer.goods, RefCell::new(vec![]));
 }
 
 #[test]
-fn force_consumptions_fault_middle() {
+fn force_goods_fault_middle() {
     let mut producer = U8Producer::default();
     let goods = U8Consumer::from(vec![0, 1, 2]);
     let fault = Fault::Defect(MockDefect);
@@ -224,8 +200,8 @@ fn force_consumptions_fault_middle() {
     producer.fail_on_produce_call(1, fault.clone());
 
     assert_eq!(
-        producer.force_consumptions(&goods).unwrap_err(),
-        producer.recall(fault, 1).try_blame().unwrap()
+        producer.force_goods(&goods).unwrap_err(),
+        Blockage::Production(producer.recall(fault, 1).try_blame().unwrap())
     );
     assert_eq!(producer.goods, RefCell::new(vec![0]));
 }
