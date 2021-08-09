@@ -2,6 +2,8 @@
 //!
 //! An [`Agent`] can be either a [`Producer`] that stores goods into the market or a [`Consumer`] that retrieves goods from the market. While an [`Agent`] is acting upon a market, it is immutable.
 
+#![allow(clippy::type_repetition_in_bounds)]
+// False positives when dealing with multiple traits.
 // Add unstable feature to document when items are supported.
 #![cfg_attr(feature = "unstable-doc-cfg", feature(doc_cfg))]
 #![no_std]

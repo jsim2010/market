@@ -41,7 +41,6 @@ fix_format: _install_format
 # - box_pointers: box pointers are okay and useful
 # - unstable_features: needed for doc_cfg
 # - variant_size_differences: handled by clippy::large_enum_variant
-# - clippy::empty_enum: recommended `!` type is not stable
 # - clippy::missing_inline_in_public_items: compiler already attempts to handle this and there is no check for if a public function is converted to private
 # - clippy::module_name_repetitions: repeating the module name in an item can be useful when it clarifies the function of the item
 # - clippy::multiple_crate_versions: not fixable when caused by dependencies
@@ -91,7 +90,6 @@ lint: _install_lint
      -D clippy::perf \
      -D clippy::cargo \
      -D clippy::nursery \
-     -A clippy::empty_enum \
      -A clippy::missing_inline_in_public_items \
      -A clippy::module_name_repetitions \
      -A clippy::multiple_crate_versions \
@@ -107,7 +105,7 @@ test:
     cargo test --verbose
 
 # Validates the project
-validate: (set_rust "1.52.1") validate_format validate_deps lint build test validate_doc
+validate: (set_rust "1.54.0") validate_format validate_deps lint build test validate_doc
 
 # Validates dependencies of the project
 validate_deps: _install_deps
